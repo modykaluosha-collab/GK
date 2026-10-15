@@ -54,6 +54,11 @@ PRODUCTS_TITLES = {
     "pubg60": "PUBG Mobile 60 🪙", "pubg325": "PUBG Mobile 325 🪙", "pubg660": "PUBG Mobile 660 🪙", "pubg1800": "PUBG Mobile 1800 🪙", "pubg3850": "PUBG Mobile 3850 🪙", "pubg8100": "PUBG Mobile 8100 🪙"
 }
 
+ALL_PRODUCT_KEYS = [
+    "ff110", "ff231", "ff583", "ff1188", "ff2420",
+    "pubg60", "pubg325", "pubg660", "pubg1800", "pubg3850", "pubg8100"
+]
+
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -441,6 +446,10 @@ class AdminState(StatesGroup):
     waiting_for_seller_balance_adjust = State()
     waiting_for_price_hours = State()
     waiting_for_ban_user_id = State()
+    
+    # حالات تحديث الأسعار الشامل والجدولة
+    waiting_for_full_price_input = State()
+    waiting_for_full_price_hours = State()
 
 class QuickSearchState(StatesGroup):
     waiting_for_player_id = State()
@@ -526,6 +535,7 @@ def get_admin_keyboard():
     builder.row(types.InlineKeyboardButton(text="📊 Stock Quick Overview", callback_data="adm_stock_overview"))
     builder.row(types.InlineKeyboardButton(text="📋 View All Active Stock Codes", callback_data="adm_view_all_codes"))
     builder.row(types.InlineKeyboardButton(text="✏️ Edit Product Prices (EGP / USDT)", callback_data="adm_edit_prices_menu"))
+    builder.row(types.InlineKeyboardButton(text="🚀 جدولة تعديل الأسعار شامل + إذاعة", callback_data="adm_full_price_schedule_start"))
     builder.row(types.InlineKeyboardButton(text="⏱️ Set EGP Price Increase Timer", callback_data="adm_set_timer"))
     builder.row(types.InlineKeyboardButton(text="📈 Comprehensive Sales Analytics", callback_data="adm_sales_analytics"))
     builder.row(types.InlineKeyboardButton(text="💎 Net Profit Report", callback_data="adm_net_profits"))
@@ -543,6 +553,170 @@ def get_admin_keyboard():
     builder.row(types.InlineKeyboardButton(text=maint_text, callback_data="adm_toggle_maintenance"))
     builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
     return builder.as_markup()
+
+# ==================== SYSTEM FOR BULK FULL PRICE UPDATE & SCHEDULED BROADCAST ====================
+
+@router.callback_query(F.data == "adm_full_price_schedule_start")
+async def start_full_price_schedule(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    await state.update_data(new_prices_map={}, current_step_index=0)
+    await state.set_state(AdminState.waiting_for_full_price_input)
+    
+    first_p_key = ALL_PRODUCT_KEYS[0]
+    first_p_title = PRODUCTS_TITLES.get(first_p_key, first_p_key)
+    curr_egp, _ = get_product_prices(first_p_key)
+    
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_panel_btn"))
+    
+    await callback.message.edit_text(
+        f"🚀 <b>بدء جدولة تعديل أسعار المنتجات كاملة:</b>\n\n"
+        f"سنقوم بإدخال السعر الجديد لكل باقة خطوة بخطوة.\n"
+        f"1️⃣ المنتجات 1/{len(ALL_PRODUCT_KEYS)}: <b>{first_p_title}</b>\n"
+        f"السعر الحالي: <b>{curr_egp} EGP</b>\n\n"
+        f"✍️ أرسل **السعر الجديد بالجنيه المصري (EGP)** الآن:",
+        reply_markup=builder.as_markup()
+    )
+    await safe_answer_callback(callback)
+
+@router.message(AdminState.waiting_for_full_price_input)
+async def process_full_price_input(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        new_price = float(message.text.strip())
+        if new_price <= 0:
+            await message.reply("❌ يرجى إدخال سعر صحيح أكبر من الصفر:")
+            return
+            
+        data = await state.get_data()
+        new_prices_map = data.get("new_prices_map", {})
+        idx = data.get("current_step_index", 0)
+        
+        current_p_key = ALL_PRODUCT_KEYS[idx]
+        new_prices_map[current_p_key] = new_price
+        
+        next_idx = idx + 1
+        if next_idx < len(ALL_PRODUCT_KEYS):
+            await state.update_data(new_prices_map=new_prices_map, current_step_index=next_idx)
+            next_p_key = ALL_PRODUCT_KEYS[next_idx]
+            next_p_title = PRODUCTS_TITLES.get(next_p_key, next_p_key)
+            curr_egp, _ = get_product_prices(next_p_key)
+            
+            await message.answer(
+                f"✅ تم حفظ السعر للباقة السابقة!\n\n"
+                f"المنتج {next_idx+1}/{len(ALL_PRODUCT_KEYS)}: <b>{next_p_title}</b>\n"
+                f"السعر الحالي: <b>{curr_egp} EGP</b>\n\n"
+                f"✍️ أرسل **السعر الجديد بالجنيه (EGP)**:"
+            )
+        else:
+            await state.update_data(new_prices_map=new_prices_map)
+            await state.set_state(AdminState.waiting_for_full_price_hours)
+            
+            await message.answer(
+                f"🎉 <b>تم إدخال أسعار جميع الباقات بنجاح!</b>\n\n"
+                f"⏱️ أرسل الآن **عدد الساعات** التي تريد تطبيق التعديل بعدها أوتوماتيكياً (مثلاً أرسل `3` أو `5`):"
+            )
+            
+    except ValueError:
+        await message.reply("❌ صيغة غير صحيحة. أرسل الأرقام فقط (مثال: `45` أو `90`):")
+
+@router.message(AdminState.waiting_for_full_price_hours)
+async def process_full_price_hours(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        hours_val = float(message.text.strip())
+        if hours_val <= 0:
+            await message.reply("❌ يجب أن يكون الوقت أكبر من 0:")
+            return
+            
+        data = await state.get_data()
+        new_prices_map = data.get("new_prices_map", {})
+        
+        await state.update_data(scheduled_hours=hours_val)
+        
+        summary_text = f"📋 <b>ملخص التعديل الجديد للأسعار (سيتم تطبيقه بعد {hours_val} ساعات):</b>\n\n"
+        for p_key, new_p in new_prices_map.items():
+            p_title = PRODUCTS_TITLES.get(p_key, p_key)
+            old_p, _ = get_product_prices(p_key)
+            summary_text += f"• {p_title}: <s>{old_p:.0f} EGP</s> ➔ <b>{new_p:.0f} EGP</b>\n"
+            
+        summary_text += "\nهل تريد الموافقة وإرسال الإذاعة التنبيهية لجميع الأعضاء الآن؟"
+        
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="✅ موافقة وإرسال الإذاعة فوراً", callback_data="confirm_full_sched_exec"))
+        builder.row(types.InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_panel_btn"))
+        
+        await message.answer(summary_text, reply_markup=builder.as_markup())
+        
+    except ValueError:
+        await message.reply("❌ أرسل رقم الساعات بشكل صحيح (مثال: `3`):")
+
+@router.callback_query(F.data == "confirm_full_sched_exec")
+async def confirm_and_broadcast_full_schedule(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    new_prices_map = data.get("new_prices_map")
+    hours_val = data.get("scheduled_hours", 1.0)
+    
+    if not new_prices_map:
+        await safe_answer_callback(callback, "⚠️ خطأ في البيانات.", show_alert=True)
+        await state.clear()
+        return
+
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT user_id FROM users")
+    users = cursor.fetchall()
+    conn.close()
+
+    broadcast_notice = (
+        f"🚨 <b>تنبيه هام وعاجل من إدارة المتجر!</b>\n\n"
+        f"📢 نود إعلامكم أنه سيتم تحديث وتغيير أسعار جميع باقات الألعاب (فري فاير وببجي) تلقائياً بعد <b>{hours_val:.0f} ساعات</b> من الآن!\n\n"
+        f"⚡ <b>لحق اشحن رصيدك واشتري باقاتك فوراً بالأسعار القديمة مباشرة من المحفظة قبل تطبيق الأسعار الجديدة!</b> 💎🎮"
+    )
+
+    success_cnt = 0
+    for (u_id,) in users:
+        try:
+            builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="💳 شحن الرصيد والشراء الآن", callback_data="main_menu"))
+            await bot.send_message(chat_id=u_id, text=broadcast_notice, reply_markup=builder.as_markup())
+            success_cnt += 1
+            await asyncio.sleep(0.04)
+        except:
+            pass
+
+    asyncio.create_task(run_full_scheduled_price_update(new_prices_map, hours_val))
+
+    try:
+        await callback.message.edit_text(
+            f"✅ <b>تمت العملية بنجاح!</b>\n\n"
+            f"• تم إرسال الإشعار التنبيهي لـ <b>{success_cnt}</b> مستخدم.\n"
+            f"• سيقوم البوت بتطبيق الأسعار الجديدة أوتوماتيكياً في المتجر بعد <b>{hours_val} ساعات</b> بالضبط."
+        )
+    except:
+        pass
+        
+    await state.clear()
+    await safe_answer_callback(callback)
+
+async def run_full_scheduled_price_update(new_prices_map, hours):
+    await asyncio.sleep(hours * 3600)
+    try:
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        for p_key, new_egp in new_prices_map.items():
+            cursor.execute("UPDATE product_prices SET price_egp = ? WHERE product_key = ?", (new_egp, p_key))
+        conn.commit()
+        conn.close()
+
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"⏰ <b>تم تطبيق تحديل الأسعار الشامل التلقائي بنجاح في المتجر!</b>\nتم تحديث أسعار كافة باقات فري فاير وببجي المحددة."
+        )
+    except Exception as e:
+        logging.error(f"Error executing full scheduled price update: {e}")
+
+# ==================== OTHER HANDLERS ====================
 
 @router.message(Command("seller"))
 async def cmd_seller(message: types.Message):
@@ -2200,7 +2374,7 @@ async def admin_reject_order(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(reject_order_id=order_id)
     await state.set_state(AdminState.waiting_for_reject_reason)
     
-    await callback.message.reply("✍️ أرسل سبب الرفض الآن في رسالة (أو اكتب السبب بالتفصيل وسيتم إرساله للعميل تلقائياً):")
+    await callback.message.reply("✍️ أرسل سبب الرفض الآن في رسالة (سيتم إرسالها للعميل مع يوزر الدعم تلقائياً):")
     await safe_answer_callback(callback)
 
 @router.message(AdminState.waiting_for_reject_reason)
