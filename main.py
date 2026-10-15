@@ -19,12 +19,11 @@ TOKEN = "8855603359:AAG5KiEcEZOVbrkCYuPOB9wusoZLL22Mlog"
 ADMIN_ID = 1332736076  
 SUPPORT_USERNAME = "GUODA36"
 
-# Payment Details (Egypt & International)
+# Payment Details
 VODAFONE_NUMBER = "01008924340"
 USDT_TRC20_ADDRESS = "TZFH6r1gLj94GWMqAQ71p3uixB7HTd9ZVL"
 
 USDT_EGP_RATE = 50.0  
-
 MIN_DEPOSIT_AMOUNT = 200.0  
 SELLER_UPGRADE_COST_EGP = 1250.0 
 SELLER_MIN_WITHDRAW = 200.0 
@@ -34,40 +33,27 @@ VIP_PLATFORM_FEE = 0.01
 
 # Channels Setup
 LOG_CHANNEL_ID = -1004393845755      
-DELIVERY_PROOF_CHANNEL_ID = -1004490105003    # Channel for ✅ New order delivered.
-GUIDE_UPDATES_CHANNEL_ID = -1003836643803     # Channel for Guides & Updates
-STOCK_ALERT_CHANNEL_ID = -1004486768828      # Channel for Stock Alerts
+DELIVERY_PROOF_CHANNEL_ID = -1004490105003
+GUIDE_UPDATES_CHANNEL_ID = -1003836643803
+STOCK_ALERT_CHANNEL_ID = -1004486768828
 
 GUIDE_UPDATES_LINK = "https://t.me/+r3C8qot_U7ExZTU0"
-DELIVERY_PROOF_LINK = "https://t.me/c/4490105003/1"   # Update with public link/invite if needed
-STOCK_ALERT_LINK = "https://t.me/c/4486768828/1"      # Update with public link/invite if needed
+DELIVERY_PROOF_LINK = "https://t.me/c/4490105003/1"
+STOCK_ALERT_LINK = "https://t.me/c/4486768828/1"
 
-PRODUCTS_PRICES = {
-    "ff110": 42.0,
-    "ff231": 84.0,
-    "ff583": 210.0,
-    "ff1188": 420.0,
-    "ff2420": 850.0,
-    "pubg60": 42.0,
-    "pubg325": 210.0,
-    "pubg660": 420.0,
-    "pubg1800": 1100.0,
-    "pubg3850": 2200.0,
-    "pubg8100": 4500.0
+PRODUCTS_PRICES_EGP = {
+    "ff110": 42.0, "ff231": 84.0, "ff583": 210.0, "ff1188": 420.0, "ff2420": 850.0,
+    "pubg60": 42.0, "pubg325": 210.0, "pubg660": 420.0, "pubg1800": 1100.0, "pubg3850": 2200.0, "pubg8100": 4500.0
+}
+
+PRODUCTS_PRICES_USDT = {
+    "ff110": 0.84, "ff231": 1.68, "ff583": 4.20, "ff1188": 8.40, "ff2420": 17.0,
+    "pubg60": 0.84, "pubg325": 4.20, "pubg660": 8.40, "pubg1800": 22.0, "pubg3850": 44.0, "pubg8100": 90.0
 }
 
 PRODUCTS_TITLES = {
-    "ff110": "Free Fire 110 💎",
-    "ff231": "Free Fire 231 💎",
-    "ff583": "Free Fire 583 💎",
-    "ff1188": "Free Fire 1188 💎",
-    "ff2420": "Free Fire 2420 💎",
-    "pubg60": "PUBG Mobile 60 🪙",
-    "pubg325": "PUBG Mobile 325 🪙",
-    "pubg660": "PUBG Mobile 660 🪙",
-    "pubg1800": "PUBG Mobile 1800 🪙",
-    "pubg3850": "PUBG Mobile 3850 🪙",
-    "pubg8100": "PUBG Mobile 8100 🪙"
+    "ff110": "Free Fire 110 💎", "ff231": "Free Fire 231 💎", "ff583": "Free Fire 583 💎", "ff1188": "Free Fire 1188 💎", "ff2420": "Free Fire 2420 💎",
+    "pubg60": "PUBG Mobile 60 🪙", "pubg325": "PUBG Mobile 325 🪙", "pubg660": "PUBG Mobile 660 🪙", "pubg1800": "PUBG Mobile 1800 🪙", "pubg3850": "PUBG Mobile 3850 🪙", "pubg8100": "PUBG Mobile 8100 🪙"
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -78,10 +64,10 @@ dp = Dispatcher(storage=storage)
 router = Router()
 
 DB_NAME = "store_v23.db"
-
 user_last_action = {}
 SPAM_DELAY = 1.0  
 maintenance_mode = False  
+price_increase_hours = 8.0 
 
 def init_db():
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
@@ -192,7 +178,19 @@ def init_db():
             UNIQUE(user_id, product_key)
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS product_prices (
+            product_key TEXT PRIMARY KEY,
+            price_egp REAL,
+            price_usdt REAL
+        )
+    """)
     
+    for p_key in PRODUCTS_PRICES_EGP.keys():
+        egp_val = PRODUCTS_PRICES_EGP[p_key]
+        usdt_val = PRODUCTS_PRICES_USDT[p_key]
+        cursor.execute("INSERT OR IGNORE INTO product_prices (product_key, price_egp, price_usdt) VALUES (?, ?, ?)", (p_key, egp_val, usdt_val))
+
     try:
         cursor.execute("ALTER TABLE purchased_transactions ADD COLUMN rating INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
@@ -202,6 +200,19 @@ def init_db():
     conn.close()
 
 init_db()
+
+def get_product_prices(product_key):
+    try:
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT price_egp, price_usdt FROM product_prices WHERE product_key = ?", (product_key,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0], row[1]
+    except:
+        pass
+    return PRODUCTS_PRICES_EGP.get(product_key, 0.0), PRODUCTS_PRICES_USDT.get(product_key, 0.0)
 
 async def set_bot_commands():
     commands = [
@@ -393,7 +404,6 @@ async def notify_subscribed_users_new_stock(product_key, count=1):
 
     p_title = PRODUCTS_TITLES.get(product_key, product_key)
     
-    # Send Notification to Channel
     try:
         await bot.send_message(
             chat_id=STOCK_ALERT_CHANNEL_ID,
@@ -438,6 +448,10 @@ class AdminState(StatesGroup):
     waiting_for_balance_change = State()
     waiting_for_warning = State()
     waiting_for_seller_toggle = State()
+    waiting_for_new_price_egp = State()
+    waiting_for_new_price_usdt = State()
+    waiting_for_seller_balance_adjust = State()
+    waiting_for_price_hours = State()
 
 class QuickSearchState(StatesGroup):
     waiting_for_player_id = State()
@@ -469,7 +483,6 @@ def get_main_keyboard(user_id):
     builder.row(types.InlineKeyboardButton(text="🎮 PUBG Mobile", callback_data="cat_pubg"))
     builder.row(types.InlineKeyboardButton(text="🔍 Quick Search by Player ID", callback_data="quick_search_id"))
     
-    # Official Channels Row
     builder.row(
         types.InlineKeyboardButton(text="📖 Guides & Updates", url=GUIDE_UPDATES_LINK),
         types.InlineKeyboardButton(text="📦 Live Stock Channel", url=STOCK_ALERT_LINK)
@@ -511,7 +524,8 @@ def get_admin_keyboard():
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📦 Add Stock", callback_data="adm_addstock"))
     builder.row(types.InlineKeyboardButton(text="📊 Stock Quick Overview", callback_data="adm_stock_overview"))
-    builder.row(types.InlineKeyboardButton(text="🔍 Review Pending Stock", callback_data="adm_pending_stock_list"))
+    builder.row(types.InlineKeyboardButton(text="✏️ Edit Product Prices (EGP / USDT)", callback_data="adm_edit_prices_menu"))
+    builder.row(types.InlineKeyboardButton(text="⏱️ Set EGP Price Increase Timer", callback_data="adm_set_timer"))
     builder.row(types.InlineKeyboardButton(text="📈 Comprehensive Sales Analytics", callback_data="adm_sales_analytics"))
     builder.row(types.InlineKeyboardButton(text="💎 Net Profit Report", callback_data="adm_net_profits"))
     builder.row(types.InlineKeyboardButton(text="👥 Users Balances", callback_data="adm_users_balances"))
@@ -724,7 +738,7 @@ async def seller_add_stock_start(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="🛠️ Seller Panel", callback_data="seller_panel_btn"))
 
     try:
-        await callback.message.edit_text("📦 Choose game category to add stock (Requires admin review):", reply_markup=builder.as_markup())
+        await callback.message.edit_text("📦 Choose game category to add stock:", reply_markup=builder.as_markup())
     except:
         pass
     await safe_answer_callback(callback)
@@ -738,8 +752,8 @@ async def addstock_freefire_menu(callback: types.CallbackQuery):
     ff_items = ["ff110", "ff231", "ff583", "ff1188", "ff2420"]
     for p_key in ff_items:
         title = PRODUCTS_TITLES.get(p_key, p_key)
-        price = PRODUCTS_PRICES.get(p_key, 0)
-        builder.row(types.InlineKeyboardButton(text=f"🔥 {title} ({price} EGP)", callback_data=f"select_add_p_{p_key}"))
+        price_egp, _ = get_product_prices(p_key)
+        builder.row(types.InlineKeyboardButton(text=f"🔥 {title} ({price_egp} EGP)", callback_data=f"select_add_p_{p_key}"))
     builder.row(types.InlineKeyboardButton(text="⬅️ Back", callback_data="seller_add_stock"))
 
     try:
@@ -757,8 +771,8 @@ async def addstock_pubg_menu(callback: types.CallbackQuery):
     pubg_items = ["pubg60", "pubg325", "pubg660", "pubg1800", "pubg3850", "pubg8100"]
     for p_key in pubg_items:
         title = PRODUCTS_TITLES.get(p_key, p_key)
-        price = PRODUCTS_PRICES.get(p_key, 0)
-        builder.row(types.InlineKeyboardButton(text=f"🎮 {title} ({price} EGP)", callback_data=f"select_add_p_{p_key}"))
+        price_egp, _ = get_product_prices(p_key)
+        builder.row(types.InlineKeyboardButton(text=f"🎮 {title} ({price_egp} EGP)", callback_data=f"select_add_p_{p_key}"))
     builder.row(types.InlineKeyboardButton(text="⬅️ Back", callback_data="seller_add_stock"))
 
     try:
@@ -783,7 +797,7 @@ async def select_package_for_stock(callback: types.CallbackQuery, state: FSMCont
     msg = (
         f"📦 Selected Package: <b>{prod_title}</b>\n\n"
         "📲 Send codes now (each code on a separate line).\n"
-        "✨ Codes will be submitted to Admin for approval."
+        "✨ Codes will be added to inventory instantly."
     )
     try:
         await callback.message.edit_text(msg, reply_markup=builder.as_markup())
@@ -854,6 +868,116 @@ async def adm_select_package(callback: types.CallbackQuery, state: FSMContext):
         pass
     await safe_answer_callback(callback)
 
+@router.callback_query(F.data == "adm_edit_prices_menu")
+async def adm_edit_prices_menu(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    builder = InlineKeyboardBuilder()
+    for p_key, title in PRODUCTS_TITLES.items():
+        egp_p, usdt_p = get_product_prices(p_key)
+        builder.row(types.InlineKeyboardButton(text=f"✏️ {title} ({egp_p} EGP | ${usdt_p})", callback_data=f"adm_set_price_{p_key}"))
+        
+    builder.row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
+    
+    try:
+        await callback.message.edit_text("✏️ <b>Select a product to update its prices (EGP & USDT):</b>", reply_markup=builder.as_markup())
+    except:
+        pass
+    await safe_answer_callback(callback)
+
+@router.callback_query(F.data.startswith("adm_set_price_"))
+async def adm_set_price_select(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    p_key = callback.data.split("_")[3]
+    prod_title = PRODUCTS_TITLES.get(p_key, p_key)
+    
+    await state.update_data(editing_product_key=p_key)
+    await state.set_state(AdminState.waiting_for_new_price_egp)
+    
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="adm_edit_prices_menu"))
+    try:
+        egp_p, usdt_p = get_product_prices(p_key)
+        await callback.message.edit_text(
+            f"📦 Product: <b>{prod_title}</b>\n"
+            f"Current EGP Price: <b>{egp_p} EGP</b> | Current USDT: <b>${usdt_p}</b>\n\n"
+            f"✍️ Step 1: Send the new price in **Egyptian Pounds (EGP)** (e.g., `45`):",
+            reply_markup=builder.as_markup()
+        )
+    except:
+        pass
+    await safe_answer_callback(callback)
+
+@router.message(AdminState.waiting_for_new_price_egp)
+async def adm_save_new_price_egp(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        new_egp = float(message.text.strip())
+        if new_egp < 0:
+            await message.answer("❌ Price cannot be negative.")
+            return
+        await state.update_data(new_egp_val=new_egp)
+        await state.set_state(AdminState.waiting_for_new_price_usdt)
+        
+        builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="adm_edit_prices_menu"))
+        await message.answer("✍️ Step 2: Send the new price in **USDT (Dollar)** (e.g., `0.90` or `5.0`):", reply_markup=builder.as_markup())
+    except ValueError:
+        await message.answer("❌ Invalid format. Please send a valid number for EGP price:")
+
+@router.message(AdminState.waiting_for_new_price_usdt)
+async def adm_save_new_price_usdt(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    p_key = data.get("editing_product_key")
+    new_egp = data.get("new_egp_val")
+    
+    try:
+        new_usdt = float(message.text.strip())
+        if new_usdt < 0:
+            await message.answer("❌ Price cannot be negative.")
+            return
+            
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE product_prices SET price_egp = ?, price_usdt = ? WHERE product_key = ?", (new_egp, new_usdt, p_key))
+        conn.commit()
+        conn.close()
+        
+        prod_title = PRODUCTS_TITLES.get(p_key, p_key)
+        await message.answer(f"✅ Successfully updated <b>{prod_title}</b>:\n• EGP Price: <b>{new_egp} EGP</b>\n• USDT Price: <b>${new_usdt} USDT</b>")
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Invalid format. Please send a valid number for USDT price:")
+
+@router.callback_query(F.data == "adm_set_timer")
+async def adm_set_timer_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    await state.set_state(AdminState.waiting_for_price_hours)
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel_btn"))
+    try:
+        await callback.message.edit_text(
+            f"⏱️ Current timer for EGP price increase: <b>{price_increase_hours} hours</b>\n\n"
+            f"✍️ Send the new number of hours (e.g., `6`, `12`, `24`):",
+            reply_markup=builder.as_markup()
+        )
+    except:
+        pass
+    await safe_answer_callback(callback)
+
+@router.message(AdminState.waiting_for_price_hours)
+async def adm_save_timer_hours(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    global price_increase_hours
+    try:
+        hrs = float(message.text.strip())
+        if hrs <= 0:
+            await message.answer("❌ Hours must be greater than 0.")
+            return
+        price_increase_hours = hrs
+        await message.reply(f"✅ Timer updated! EGP prices will automatically increase after <b>{price_increase_hours} hours</b> (USDT prices remain fixed).")
+        await state.clear()
+    except ValueError:
+        await message.reply("❌ Invalid format. Please send digits only:")
+
 @router.message(SellerState.waiting_for_seller_stock)
 async def process_bulk_stock_items(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -865,7 +989,7 @@ async def process_bulk_stock_items(message: types.Message, state: FSMContext):
         await message.answer("❌ Please send valid text containing codes.")
         return
 
-    if not p_key or p_key not in PRODUCTS_PRICES:
+    if not p_key:
         await message.answer("❌ Error: Invalid product selection. Please start again.")
         await state.clear()
         return
@@ -873,7 +997,7 @@ async def process_bulk_stock_items(message: types.Message, state: FSMContext):
     lines = message.text.strip().split("\n")
     success_count = 0
     duplicate_count = 0
-    price = PRODUCTS_PRICES[p_key]
+    price_egp, _ = get_product_prices(p_key)
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
@@ -883,41 +1007,34 @@ async def process_bulk_stock_items(message: types.Message, state: FSMContext):
         if not code:
             continue
 
-        if is_admin == 1:
-            try:
-                cursor.execute("INSERT INTO stock (product_key, code, seller_id, price, status) VALUES (?, ?, 0, ?, 'active')", (p_key, code, price))
-                success_count += 1
-            except sqlite3.IntegrityError:
+        try:
+            cursor.execute("SELECT id FROM stock WHERE code = ?", (code,))
+            if cursor.fetchone():
                 duplicate_count += 1
-            except:
-                pass
-        else:
-            try:
-                cursor.execute("SELECT id FROM stock WHERE code = ?", (code,))
-                if cursor.fetchone():
-                    duplicate_count += 1
-                    continue
-                cursor.execute("INSERT INTO pending_stock (seller_id, product_key, code, price) VALUES (?, ?, ?, ?)", (user_id, p_key, code, price))
-                success_count += 1
-            except sqlite3.IntegrityError:
-                duplicate_count += 1
-            except:
-                pass
+                continue
+            
+            s_id = 0 if is_admin == 1 else user_id
+            cursor.execute("INSERT INTO stock (product_key, code, seller_id, price, status) VALUES (?, ?, ?, ?, 'active')", (p_key, code, s_id, price_egp))
+            success_count += 1
+        except sqlite3.IntegrityError:
+            duplicate_count += 1
+        except:
+            pass
 
     conn.commit()
     conn.close()
 
     prod_name = PRODUCTS_TITLES.get(p_key, p_key)
-    if is_admin == 1:
-        await message.answer(f"✅ Admin Stock Added!\nProduct: <b>{prod_name}</b>\nAdded Successfully: <b>{success_count}</b>\nIgnored Duplicates: <b>{duplicate_count}</b>")
-        if success_count > 0:
-            asyncio.create_task(notify_subscribed_users_new_stock(p_key, success_count))
-    else:
-        await message.answer(f"✅ Stock submitted for Admin Moderation!\nProduct: <b>{prod_name}</b>\nAccepted for Review: <b>{success_count}</b>\nIgnored Duplicates: <b>{duplicate_count}</b>")
-        try:
-            await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 New Stock submitted for moderation by Seller (ID: <code>{user_id}</code>) for product <b>{prod_name}</b> ({success_count} codes). Check Admin Panel.")
-        except:
-            pass
+    await message.answer(f"✅ Stock Added Successfully!\nProduct: <b>{prod_name}</b>\nAdded: <b>{success_count}</b>\nIgnored Duplicates: <b>{duplicate_count}</b>")
+    
+    if success_count > 0:
+        asyncio.create_task(notify_subscribed_users_new_stock(p_key, success_count))
+        if is_admin != 1:
+            try:
+                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Seller (ID: <code>{user_id}</code>) added <b>{success_count}</b> codes directly to stock for <b>{prod_name}</b>.")
+            except:
+                pass
+                
     await state.clear()
 
 @router.callback_query(F.data == "adm_stock_overview")
@@ -940,74 +1057,6 @@ async def admin_stock_overview(callback: types.CallbackQuery):
     except:
         pass
     await safe_answer_callback(callback)
-
-@router.callback_query(F.data == "adm_pending_stock_list")
-async def admin_pending_stock_list_handler(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, seller_id, product_key, code, price FROM pending_stock")
-    rows = cursor.fetchall()
-    conn.close()
-
-    builder = InlineKeyboardBuilder()
-    if not rows:
-        msg = "ℹ️ No pending stock codes for review."
-    else:
-        msg = f"🔍 Pending Stock Codes ({len(rows)} items):\n\n"
-        for ps_id, s_id, p_key, code, price in rows:
-            prod_name = PRODUCTS_TITLES.get(p_key, p_key)
-            msg += f"ID #{ps_id} | Product: {prod_name} | Code: <code>{code}</code> | Seller: <code>{s_id}</code>\n"
-            builder.row(
-                types.InlineKeyboardButton(text=f"✅ Accept #{ps_id}", callback_data=f"adm_acc_stock_{ps_id}"),
-                types.InlineKeyboardButton(text=f"❌ Reject #{ps_id}", callback_data=f"adm_rej_stock_{ps_id}")
-            )
-
-    builder.row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
-    try:
-        await callback.message.edit_text(msg, reply_markup=builder.as_markup())
-    except:
-        await callback.message.answer(msg, reply_markup=builder.as_markup())
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data.startswith("adm_acc_stock_"))
-async def admin_accept_stock_code(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
-    ps_id = int(callback.data.split("_")[3])
-
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute("SELECT seller_id, product_key, code, price FROM pending_stock WHERE id = ?", (ps_id,))
-    row = cursor.fetchone()
-    if row:
-        s_id, p_key, code, price = row
-        try:
-            cursor.execute("INSERT INTO stock (product_key, code, seller_id, price, status) VALUES (?, ?, ?, ?, 'active')", (p_key, code, s_id, price))
-            cursor.execute("DELETE FROM pending_stock WHERE id = ?", (ps_id,))
-            conn.commit()
-            await safe_answer_callback(callback, "✅ Stock code approved and added to active inventory.", show_alert=True)
-            asyncio.create_task(notify_subscribed_users_new_stock(p_key, 1))
-        except sqlite3.IntegrityError:
-            cursor.execute("DELETE FROM pending_stock WHERE id = ?", (ps_id,))
-            conn.commit()
-            await safe_answer_callback(callback, "⚠️ Code already exists in system. Removed from pending.", show_alert=True)
-    conn.close()
-
-    await admin_pending_stock_list_handler(callback)
-
-@router.callback_query(F.data.startswith("adm_rej_stock_"))
-async def admin_reject_stock_code(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
-    ps_id = int(callback.data.split("_")[3])
-
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM pending_stock WHERE id = ?", (ps_id,))
-    conn.commit()
-    conn.close()
-
-    await safe_answer_callback(callback, "❌ Stock code rejected and deleted.", show_alert=True)
-    await admin_pending_stock_list_handler(callback)
 
 @router.callback_query(F.data == "adm_net_profits")
 async def admin_net_profits_report(callback: types.CallbackQuery):
@@ -1408,7 +1457,7 @@ async def show_pending_orders(callback: types.CallbackQuery):
         await callback.message.answer(msg, reply_markup=builder.as_markup())
     await safe_answer_callback(callback)
 
-# ==================== DEPOSIT SYSTEM (EGP + BINANCE/CRYPTO) ====================
+# ==================== DEPOSIT SYSTEM ====================
 
 @router.callback_query(F.data == "deposit_balance")
 async def deposit_start(callback: types.CallbackQuery, state: FSMContext):
@@ -1590,11 +1639,11 @@ async def admin_send_deposit_reject_reason(message: types.Message, state: FSMCon
         pass
     await state.clear()
 
-# ==================== DUAL CURRENCY & CLEAN MENU SELECTION ====================
+# ==================== SELECTION MENU ====================
 
 @router.callback_query(F.data.in_(["cat_freefire", "cat_pubg"]))
 async def ask_currency_selection(callback: types.CallbackQuery):
-    cat_type = callback.data.split("_")[1] # freefire or pubg
+    cat_type = callback.data.split("_")[1]
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🇪🇬 EGP (Egyptian Pound)", callback_data=f"cur_egp_{cat_type}"))
     builder.row(types.InlineKeyboardButton(text="🌐 USDT (US Dollar)", callback_data=f"cur_usdt_{cat_type}"))
@@ -1612,8 +1661,8 @@ async def ask_currency_selection(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("cur_"))
 async def show_category_products_filtered(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    curr = parts[1]      # egp or usdt
-    cat_type = parts[2]  # freefire or pubg
+    curr = parts[1]      
+    cat_type = parts[2]  
     
     builder = InlineKeyboardBuilder()
     
@@ -1624,15 +1673,14 @@ async def show_category_products_filtered(callback: types.CallbackQuery):
 
     for p_key in items:
         title = PRODUCTS_TITLES.get(p_key, p_key)
-        price_egp = PRODUCTS_PRICES.get(p_key, 0.0)
+        egp_p, usdt_p = get_product_prices(p_key)
         
         if curr == "egp":
-            btn_text = f"🔥 {title} - {price_egp:.0f} EGP" if cat_type == "freefire" else f"🎮 {title} - {price_egp:.0f} EGP"
+            btn_text = f"🔥 {title} - {egp_p:.0f} EGP" if cat_type == "freefire" else f"🎮 {title} - {egp_p:.0f} EGP"
         else:
-            price_usdt = price_egp / USDT_EGP_RATE
-            btn_text = f"🔥 {title} - ${price_usdt:.2f} USDT" if cat_type == "freefire" else f"🎮 {title} - ${price_usdt:.2f} USDT"
+            btn_text = f"🔥 {title} - ${usdt_p:.2f} USDT" if cat_type == "freefire" else f"🎮 {title} - ${usdt_p:.2f} USDT"
             
-        builder.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"buy_{p_key}"))
+        builder.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"buy_{p_key}_{curr}"))
 
     builder.row(types.InlineKeyboardButton(text="⬅️ Change Currency", callback_data=f"cat_{cat_type}"))
     builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
@@ -1660,7 +1708,9 @@ async def subscribe_stock_notification(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("buy_"))
 async def process_buy_click(callback: types.CallbackQuery, state: FSMContext):
-    p_key = callback.data.split("_")[1]
+    parts = callback.data.split("_")
+    p_key = parts[1]
+    curr = parts[2] if len(parts) > 2 else "egp"
     
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
@@ -1684,21 +1734,20 @@ async def process_buy_click(callback: types.CallbackQuery, state: FSMContext):
         return
 
     title = PRODUCTS_TITLES.get(p_key, "Item")
-    price = PRODUCTS_PRICES.get(p_key, 0.0)
-    usdt_price = price / USDT_EGP_RATE
+    egp_price, usdt_price = get_product_prices(p_key)
     
-    await state.update_data(product_title=title, product_key=p_key, product_price=price)
+    # السعر المعتمد للشراء بالرصيد هو المصري (EGP)، والدفع الخارجي يقبل العملة المختارة
+    await state.update_data(product_title=title, product_key=p_key, product_price_egp=egp_price, product_price_usdt=usdt_price, selected_currency=curr)
 
     builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(text="💳 Pay from Wallet Balance", callback_data="pay_method_wallet"),
-        types.InlineKeyboardButton(text="📱 Direct Payment / External", callback_data="pay_method_external")
-    )
+    builder.row(types.InlineKeyboardButton(text="💳 Pay from Wallet Balance", callback_data="pay_method_wallet"))
+    builder.row(types.InlineKeyboardButton(text="📱 Direct Payment / External", callback_data="pay_method_external"))
     builder.row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
     
+    display_price_str = f"{egp_price:.0f} EGP" if curr == "egp" else f"${usdt_price:.2f} USDT"
     try:
         await callback.message.edit_text(
-            f"🛒 Selected Product: <b>{title}</b>\n💰 Price: <b>{price:.0f} EGP (~${usdt_price:.2f} USDT)</b>\n\n⚠️ Note: All purchases require Admin approval.\nChoose payment method:",
+            f"🛒 Selected Product: <b>{title}</b>\n💰 Price: <b>{display_price_str}</b>\n\nChoose payment method:",
             reply_markup=builder.as_markup()
         )
     except:
@@ -1712,8 +1761,7 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
     data = await state.get_data()
     prod_title = data.get("product_title", "Product")
     prod_key = data.get("product_key", "item")
-    price = data.get("product_price", 0.0)
-    user_username = f"@{user.username}" if user.username else "N/A"
+    price = data.get("product_price_egp", 0.0) # المحفظة تُخصم بالمصري EGP
 
     if user_bal < price:
         await safe_answer_callback(callback, f"❌ Insufficient balance ({user_bal:.2f} EGP). Please deposit first.", show_alert=True)
@@ -1725,49 +1773,101 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
     conn.commit()
     conn.close()
 
-    order_id = save_active_order(user.id, prod_title, prod_key, user_username, 0, price, payment_type="wallet", receipt_file_id=None)
+    auto_code, auto_seller_id, _ = get_stock_code(prod_key)
+    if not auto_code:
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (price, user.id))
+        conn.commit()
+        conn.close()
+        await safe_answer_callback(callback, "⚠️ Sorry, stock just ran out! Your balance has been refunded.", show_alert=True)
+        return
+
+    if auto_seller_id > 0:
+        sales_cnt = get_seller_data(auto_seller_id)[1]
+        fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
+        store_commission = price * fee_rate
+        net_profit = price - store_commission
+        
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET seller_balance = seller_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, auto_seller_id))
+        conn.commit()
+        conn.close()
+
+        try:
+            await bot.send_message(
+                chat_id=auto_seller_id, 
+                text=f"🎉 <b>One of your stock items was sold!</b>\n\n📦 Product: <b>{prod_title}</b>\n🔑 Code Sold: <code>{auto_code}</code>\n💰 Net Profit: <b>{net_profit:.2f} EGP</b>"
+            )
+        except:
+            pass
+
+    trans_id = 0
+    try:
+        trans_id = save_user_purchased_code(user.id, prod_title, auto_code, auto_seller_id, price)
+    except:
+        pass
 
     builder = InlineKeyboardBuilder()
+    if trans_id > 0:
+        builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
+    
     builder.row(
-        types.InlineKeyboardButton(text="✅ Accept & Deliver", callback_data=f"accept_{order_id}"),
-        types.InlineKeyboardButton(text="❌ Reject & Refund", callback_data=f"reject_{order_id}")
+        types.InlineKeyboardButton(text="⭐ 1", callback_data=f"rate_{trans_id}_1"),
+        types.InlineKeyboardButton(text="⭐ 2", callback_data=f"rate_{trans_id}_2"),
+        types.InlineKeyboardButton(text="⭐ 3", callback_data=f"rate_{trans_id}_3"),
+        types.InlineKeyboardButton(text="⭐ 4", callback_data=f"rate_{trans_id}_4"),
+        types.InlineKeyboardButton(text="⭐ 5", callback_data=f"rate_{trans_id}_5")
     )
-    builder.row(types.InlineKeyboardButton(text="🚫 Ban User", callback_data=f"ban_user_{user.id}"))
 
-    admin_msg = f"📦 <b>New Wallet Order #{order_id} (Needs Approval)</b>\nProduct: {prod_title}\nUser: {user.full_name} (ID: <code>{user.id}</code>)\nAmount Deducted: {price} EGP"
     try:
-        await bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=builder.as_markup())
+        await callback.message.edit_text(
+            f"✅ <b>Purchase successful!</b>\n\n"
+            f"📦 Product: <b>{prod_title}</b>\n"
+            f"🔑 Code: <code>{auto_code}</code>\n\n"
+            f"🌟 Please rate our service below:",
+            reply_markup=builder.as_markup()
+        )
     except:
         pass
 
     try:
-        await callback.message.edit_text("✅ Order submitted successfully! Waiting for admin approval.")
+        await bot.send_message(chat_id=DELIVERY_PROOF_CHANNEL_ID, text=f"✅ Instant Wallet Order Delivered.\nProduct: {prod_title}")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"🛍️ <b>Instant Wallet Purchase!</b>\nBuyer: {user.full_name} (ID: <code>{user.id}</code>)\nProduct: {prod_title}\nCode: <code>{auto_code}</code>")
     except:
-        await callback.message.answer("✅ Order submitted successfully! Waiting for admin approval.")
-        
+        pass
+
     await state.clear()
     await safe_answer_callback(callback)
 
 @router.callback_query(F.data == "pay_method_external")
 async def process_pay_external_request(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    price = data.get("product_price", 0.0)
-    usdt_val = price / USDT_EGP_RATE
+    curr = data.get("selected_currency", "egp")
+    egp_price = data.get("product_price_egp", 0.0)
+    usdt_price = data.get("product_price_usdt", 0.0)
 
     await state.update_data(payment_type="external")
     await state.set_state(OrderState.waiting_for_external_receipt)
     
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
     try:
-        await callback.message.edit_text(
-            f"📲 <b>Direct Payment Details:</b>\n\n"
-            f"🇪🇬 <b>Vodafone Cash (Egypt):</b>\n"
-            f"• Number: <code>{VODAFONE_NUMBER}</code> ({price:.0f} EGP)\n\n"
-            f"🌐 <b>Binance USDT TRC20 (International):</b>\n"
-            f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (~${usdt_val:.2f} USDT)\n\n"
-            "📸 Please send the <b>transfer screenshot</b> photo now:",
-            reply_markup=builder.as_markup()
-        )
+        if curr == "egp":
+            pay_text = (
+                f"📲 <b>Direct Payment Details:</b>\n\n"
+                f"🇪🇬 <b>Vodafone Cash (Egypt):</b>\n"
+                f"• Number: <code>{VODAFONE_NUMBER}</code> ({egp_price:.0f} EGP)\n\n"
+                "📸 Please send the <b>transfer screenshot</b> photo now:"
+            )
+        else:
+            pay_text = (
+                f"📲 <b>Direct Payment Details:</b>\n\n"
+                f"🌐 <b>Binance USDT TRC20 (International):</b>\n"
+                f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (${usdt_price:.2f} USDT)\n\n"
+                "📸 Please send the <b>transfer screenshot</b> photo now:"
+            )
+        await callback.message.edit_text(pay_text, reply_markup=builder.as_markup())
     except:
         pass
     await safe_answer_callback(callback)
@@ -1781,8 +1881,7 @@ async def handle_external_receipt_photo(message: types.Message, state: FSMContex
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
     await message.answer(
         "✍️ Receipt image received!\n\n"
-        "• <b>International / Binance:</b> Send your <b>TXID / Transaction ID / Order ID</b>.\n"
-        "• <b>Egyptian Users:</b> Send the <b>Phone Number</b> you sent money from:",
+        "• Send your <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash):",
         reply_markup=builder.as_markup()
     )
 
@@ -1798,7 +1897,8 @@ async def handle_external_details_finish(message: types.Message, state: FSMConte
     user = message.from_user
     prod_title = data.get("product_title", "Product")
     prod_key = data.get("product_key", "item")
-    price = data.get("product_price", 0.0)
+    curr = data.get("selected_currency", "egp")
+    price = data.get("product_price_egp", 0.0) if curr == "egp" else (data.get("product_price_usdt", 0.0) * USDT_EGP_RATE)
     user_username = f"@{user.username}" if user.username else "N/A"
 
     order_id = save_active_order(user.id, prod_title, prod_key, user_username, 0, price, payment_type="external", receipt_file_id=photo_id)
@@ -1815,7 +1915,7 @@ async def handle_external_details_finish(message: types.Message, state: FSMConte
     admin_caption = (
         f"📦 <b>New Direct Payment Order #{order_id}</b>\n\n"
         f"Product: <b>{prod_title}</b>\n"
-        f"Price: <b>{price:.0f} EGP (~${price/USDT_EGP_RATE:.2f} USDT)</b>\n"
+        f"Price: <b>{price:.2f} EGP</b>\n"
         f"Sender Phone / TXID: <code>{details}</code>\n"
         f"User: <b>{user.full_name}</b> ({user_username} | ID: <code>{user.id}</code>)"
     )
@@ -1914,7 +2014,6 @@ async def deliver_order(order_id, game_code, message_obj):
         if trans_id > 0:
             builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
         
-        # Rating Buttons
         builder.row(
             types.InlineKeyboardButton(text="⭐ 1", callback_data=f"rate_{trans_id}_1"),
             types.InlineKeyboardButton(text="⭐ 2", callback_data=f"rate_{trans_id}_2"),
@@ -1934,36 +2033,12 @@ async def deliver_order(order_id, game_code, message_obj):
             reply_markup=builder.as_markup()
         )
         
-        # Send Delivery Notification to Delivery Proof Channel
-        delivery_channel_msg = (
-            f"✅ New order delivered.\n"
-            f"Product: {product_name}"
-        )
+        delivery_channel_msg = f"✅ New order delivered.\nProduct: {product_name}"
         try:
             await bot.send_message(chat_id=DELIVERY_PROOF_CHANNEL_ID, text=delivery_channel_msg)
         except Exception as e:
             logging.error(f"Failed to send to delivery proof channel: {e}")
         
-        conn = sqlite3.connect(DB_NAME, timeout=30.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT full_name, username FROM users WHERE user_id = ?", (target_user_id,))
-        b_row = cursor.fetchone()
-        conn.close()
-        b_name = b_row[0] if b_row else "Unknown"
-        b_uname = f"@{b_row[1]}" if b_row and b_row[1] else "No Username"
-
-        admin_sale_notice = (
-            f"🛍️ <b>Order #{order_id} Approved & Delivered!</b>\n\n"
-            f"👤 Buyer: <b>{b_name}</b> ({b_uname} | ID: <code>{target_user_id}</code>)\n"
-            f"📦 Product: <b>{product_name}</b>\n"
-            f"🔑 Code: <code>{game_code}</code>\n"
-            f"🏷️ Stock Provider (Seller): {seller_info_str}"
-        )
-        try:
-            await bot.send_message(chat_id=ADMIN_ID, text=admin_sale_notice)
-        except:
-            pass
-
         delete_active_order(order_id)
         if isinstance(message_obj, types.Message):
             await message_obj.reply(f"✅ Code delivered for order #{order_id}.")
@@ -1990,20 +2065,8 @@ async def process_user_rating(callback: types.CallbackQuery):
     stars_str = "⭐" * stars
 
     await safe_answer_callback(callback, f"Thank you for rating us {stars_str}!", show_alert=True)
-    
     try:
-        await callback.message.edit_text(
-            callback.message.text + f"\n\n⭐ <b>Your Rating:</b> {stars_str}\nThank you for your feedback!"
-        )
-    except:
-        pass
-
-    # Post Rating to Proof Channel
-    try:
-        await bot.send_message(
-            chat_id=DELIVERY_PROOF_CHANNEL_ID,
-            text=f"🌟 <b>New Customer Review!</b>\n\nProduct: <b>{p_name}</b>\nRating: <b>{stars_str}</b>\nUser: {user.first_name}"
-        )
+        await callback.message.edit_text(callback.message.text + f"\n\n⭐ <b>Your Rating:</b> {stars_str}\nThank you!")
     except:
         pass
 
@@ -2045,15 +2108,7 @@ async def process_inline_refund_request(callback: types.CallbackQuery):
         return
 
     seller_id, price, _, _, _, product_name, game_code = row
-
     await safe_answer_callback(callback, "⏳ Refund request submitted to Admin.", show_alert=True)
-    await callback.message.reply("⏳ Refund request has been sent to admin for review.")
-
-    seller_info_str = "Admin Direct Stock"
-    if seller_id > 0:
-        _, _, _, s_name, s_uname = get_seller_data(seller_id)
-        s_username_str = f"@{s_uname}" if s_uname and s_uname != "N/A" else "No Username"
-        seller_info_str = f"<b>{s_name}</b> ({s_username_str} | ID: <code>{seller_id}</code>)"
 
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -2061,15 +2116,12 @@ async def process_inline_refund_request(callback: types.CallbackQuery):
         types.InlineKeyboardButton(text="❌ Reject Refund", callback_data=f"adm_rej_ref_{trans_id}")
     )
 
-    user_username_str = f"@{user.username}" if user.username else "No Username"
     admin_msg = (
         f"🔄 <b>New Refund Request #{trans_id}</b>\n\n"
-        f"👤 Customer: <b>{user.full_name}</b> ({user_username_str} | ID: <code>{user.id}</code>)\n"
+        f"👤 Customer: <b>{user.full_name}</b> (ID: <code>{user.id}</code>)\n"
         f"📦 Product: <b>{product_name}</b>\n"
         f"🔑 Code: <code>{game_code}</code>\n"
-        f"💰 Price: <b>{price:.2f} EGP</b>\n"
-        f"🏷️ <b>Stock Provider (Seller):</b> {seller_info_str}\n\n"
-        f"⚠️ Note: Seller balance will NOT be deducted until you approve."
+        f"💰 Price: <b>{price:.2f} EGP</b>"
     )
     try:
         await bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=builder.as_markup())
@@ -2095,7 +2147,6 @@ async def admin_approve_refund(callback: types.CallbackQuery):
     cursor.execute("UPDATE purchased_transactions SET is_refunded = 1 WHERE id = ?", (trans_id,))
     cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (price, user_id))
     
-    net_seller_deduct = 0.0
     if seller_id > 0:
         sales_cnt = get_seller_data(seller_id)[1]
         fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
@@ -2110,15 +2161,6 @@ async def admin_approve_refund(callback: types.CallbackQuery):
     except:
         pass
 
-    if seller_id > 0:
-        try:
-            await bot.send_message(
-                chat_id=seller_id,
-                text=f"ℹ️ <b>Refund Notice:</b>\nAdmin approved a refund for product <b>{product_name}</b> (Code: <code>{game_code}</code>).\nAn amount of <b>{net_seller_deduct:.2f} EGP</b> has been deducted from your seller profits."
-            )
-        except:
-            pass
-
     try:
         await callback.message.edit_text(callback.message.text + "\n\n✅ Approved.")
     except:
@@ -2129,7 +2171,6 @@ async def admin_approve_refund(callback: types.CallbackQuery):
 async def admin_reject_refund(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     trans_id = int(callback.data.split("_")[3])
-
     await state.update_data(reject_refund_trans_id=trans_id)
     await state.set_state(AdminState.waiting_for_refund_reject_reason)
     await callback.message.reply(f"✍️ Enter reject reason for refund #{trans_id}:")
@@ -2151,7 +2192,7 @@ async def admin_send_refund_reject_reason(message: types.Message, state: FSMCont
     if row:
         target_user_id, product_name = row
         try:
-            await bot.send_message(chat_id=target_user_id, text=f"❌ Refund request for ({product_name}) was rejected by admin.\nReason: {reason}")
+            await bot.send_message(chat_id=target_user_id, text=f"❌ Refund request for ({product_name}) was rejected.\nReason: {reason}")
             await message.reply(f"🚫 Refund request #{trans_id} rejected.")
         except:
             pass
@@ -2167,10 +2208,6 @@ async def admin_ban_user_btn(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
     await safe_answer_callback(callback, "🚫 User banned successfully.", show_alert=True)
-    try:
-        await callback.message.edit_text(callback.message.text + "\n\n🚫 User Banned.")
-    except:
-        pass
 
 @router.callback_query(F.data == "adm_toggle_maintenance")
 async def toggle_maintenance_mode(callback: types.CallbackQuery):
@@ -2179,10 +2216,6 @@ async def toggle_maintenance_mode(callback: types.CallbackQuery):
     maintenance_mode = not maintenance_mode
     status_str = "Enabled" if maintenance_mode else "Disabled"
     await safe_answer_callback(callback, f"Maintenance: {status_str}", show_alert=True)
-    try:
-        await callback.message.edit_reply_markup(reply_markup=get_admin_keyboard())
-    except:
-        pass
 
 @router.callback_query(F.data == "adm_sellers_stock_list")
 async def admin_sellers_stock_list_handler(callback: types.CallbackQuery):
@@ -2190,7 +2223,6 @@ async def admin_sellers_stock_list_handler(callback: types.CallbackQuery):
     
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
-    
     cursor.execute("""
         SELECT DISTINCT u.user_id, u.full_name, u.username 
         FROM users u 
@@ -2200,43 +2232,23 @@ async def admin_sellers_stock_list_handler(callback: types.CallbackQuery):
     sellers = cursor.fetchall()
     
     if not sellers:
-        msg = "ℹ️ <b>Sellers Stock:</b>\n\nNo stock uploaded by any seller currently."
+        msg = "ℹ️ No stock uploaded by any seller currently."
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
     else:
-        msg = f"🔑 <b>Sellers Stock Overview ({len(sellers)} sellers active):</b>\n\n"
+        msg = f"🔑 <b>Sellers Stock Overview ({len(sellers)} sellers):</b>\n\n"
         builder = InlineKeyboardBuilder()
-        
         for s_id, s_name, s_uname in sellers:
-            uname_str = f"@{s_uname}" if s_uname and s_uname != "N/A" else "No Username"
             cursor.execute("SELECT COUNT(*) FROM stock WHERE seller_id = ? AND status = 'active'", (s_id,))
             total_codes = cursor.fetchone()[0]
-            
-            msg += f"👤 <b>{s_name}</b> ({uname_str} | ID: <code>{s_id}</code>)\n"
-            msg += f"📦 Total Available Codes: <b>{total_codes}</b>\n\n"
-            
-            cursor.execute("""
-                SELECT product_key, COUNT(*) 
-                FROM stock 
-                WHERE seller_id = ? AND status = 'active' 
-                GROUP BY product_key
-            """, (s_id,))
-            prod_counts = cursor.fetchall()
-            
-            for p_key, p_cnt in prod_counts:
-                p_title = PRODUCTS_TITLES.get(p_key, p_key)
-                msg += f"   • {p_title}: <b>{p_cnt} codes</b>\n"
-                
-            msg += "----------------------------------------\n"
-            builder.row(types.InlineKeyboardButton(text=f"🔍 View Codes ({s_name})", callback_data=f"adm_view_s_codes_{s_id}"))
-
+            msg += f"👤 <b>{s_name}</b> (ID: <code>{s_id}</code>) - Codes: <b>{total_codes}</b>\n"
+            builder.row(types.InlineKeyboardButton(text=f"🔍 Manage Codes ({s_name})", callback_data=f"adm_view_s_codes_{s_id}"))
         builder.row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
 
     conn.close()
-    
     try:
         await callback.message.edit_text(msg, reply_markup=builder.as_markup())
     except:
-        await callback.message.answer(msg, reply_markup=builder.as_markup())
+        pass
     await safe_answer_callback(callback)
 
 @router.callback_query(F.data.startswith("adm_view_s_codes_"))
@@ -2246,32 +2258,46 @@ async def admin_view_specific_seller_codes(callback: types.CallbackQuery):
     
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
-    
     cursor.execute("SELECT full_name FROM users WHERE user_id = ?", (seller_id,))
     s_row = cursor.fetchone()
     seller_name = s_row[0] if s_row else f"ID {seller_id}"
     
-    cursor.execute("SELECT product_key, code FROM stock WHERE seller_id = ? AND status = 'active'", (seller_id,))
+    cursor.execute("SELECT id, product_key, code FROM stock WHERE seller_id = ? AND status = 'active'", (seller_id,))
     codes = cursor.fetchall()
     conn.close()
 
-    if not codes:
-        msg = f"ℹ️ No active stock codes found for seller <b>{seller_name}</b>."
-    else:
-        msg = f"📋 <b>Available Stock Codes for {seller_name}:</b>\n\n"
-        for p_key, code_val in codes:
-            p_title = PRODUCTS_TITLES.get(p_key, p_key)
-            msg += f"🔹 {p_title}: <code>{code_val}</code>\n"
-
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="⬅️ Back to Sellers Stock", callback_data="adm_sellers_stock_list"))
-    builder.row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
-    
+    if not codes:
+        msg = f"ℹ️ No active stock found for <b>{seller_name}</b>."
+    else:
+        msg = f"📋 <b>Codes for {seller_name} ({len(codes)} items):</b>\n\n"
+        for st_id, p_key, code_val in codes:
+            p_title = PRODUCTS_TITLES.get(p_key, p_key)
+            builder.row(types.InlineKeyboardButton(text=f"🗑️ Delete [{p_title} | {code_val}]", callback_data=f"adm_del_st_{st_id}_{seller_id}"))
+
+    builder.row(types.InlineKeyboardButton(text="⬅️ Back", callback_data="adm_sellers_stock_list"))
     try:
         await callback.message.edit_text(msg, reply_markup=builder.as_markup())
     except:
-        await callback.message.answer(msg, reply_markup=builder.as_markup())
+        pass
     await safe_answer_callback(callback)
+
+@router.callback_query(F.data.startswith("adm_del_st_"))
+async def admin_delete_seller_stock_code(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    parts = callback.data.split("_")
+    st_id = int(parts[3])
+    seller_id = int(parts[4])
+
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stock WHERE id = ?", (st_id,))
+    conn.commit()
+    conn.close()
+
+    await safe_answer_callback(callback, "✅ Code deleted successfully.", show_alert=True)
+    callback.data = f"adm_view_s_codes_{seller_id}"
+    await admin_view_specific_seller_codes(callback)
 
 @router.callback_query(F.data.in_(["adm_users_balances", "adm_sellers_list", "adm_pending_withdrawals", "adm_manage_balance", "adm_ledger_history", "adm_warning_menu", "adm_users_report", "adm_broadcast"]))
 async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -2284,28 +2310,28 @@ async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext
         cursor.execute("SELECT user_id, full_name, balance FROM users ORDER BY balance DESC LIMIT 30")
         rows = cursor.fetchall()
         conn.close()
-
-        msg = f"👥 Top Users Balances:\n\n"
+        msg = "👥 Top Users Balances:\n\n"
         for u_id, name, bal in rows:
-            msg += f"👤 <b>{name}</b> (ID: <code>{u_id}</code>)\n💳 Balance: <b>{bal:.2f} EGP</b>\n--------------------\n"
-
+            msg += f"👤 <b>{name}</b> (ID: <code>{u_id}</code>) - <b>{bal:.2f} EGP</b>\n"
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
         await callback.message.edit_text(msg, reply_markup=builder.as_markup())
 
     elif action == "adm_sellers_list":
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, full_name, seller_balance, seller_sales_count, is_seller FROM users WHERE is_seller = 1")
+        cursor.execute("SELECT user_id, full_name, seller_balance, seller_sales_count FROM users WHERE is_seller = 1")
         sellers = cursor.fetchall()
         conn.close()
-
-        msg = f"⭐ Sellers List ({len(sellers)}):\nControl buttons below to manage or remove sellers:"
+        msg = f"⭐ Sellers List ({len(sellers)}):\n"
         builder = InlineKeyboardBuilder()
-        for s_id, name, bal, sales, _ in sellers:
-            msg += f"\n\n👤 <b>{name}</b> (ID: <code>{s_id}</code>)\n💰 Profits: <b>{bal:.2f} EGP</b> | Sales: <b>{sales}</b>"
-            builder.row(types.InlineKeyboardButton(text=f"❌ Remove Seller {name}", callback_data=f"adm_demote_seller_{s_id}"))
-
-        builder.row(types.InlineKeyboardButton(text="➕ Promote New User to Seller", callback_data="adm_prompt_promote_seller"))
+        for s_id, name, bal, sales in sellers:
+            msg += f"\n👤 <b>{name}</b> (ID: <code>{s_id}</code>)\n💰 Profits: <b>{bal:.2f} EGP</b> | Sales: <b>{sales}</b>"
+            builder.row(
+                types.InlineKeyboardButton(text=f"🗑️ Clear", callback_data=f"adm_zero_sbal_{s_id}"),
+                types.InlineKeyboardButton(text=f"➕ Add", callback_data=f"adm_add_sbal_{s_id}")
+            )
+            builder.row(types.InlineKeyboardButton(text=f"❌ Remove {name}", callback_data=f"adm_demote_seller_{s_id}"))
+        builder.row(types.InlineKeyboardButton(text="➕ Promote User", callback_data="adm_prompt_promote_seller"))
         builder.row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
         await callback.message.edit_text(msg, reply_markup=builder.as_markup())
 
@@ -2315,41 +2341,21 @@ async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext
         cursor.execute("SELECT id, seller_id, amount, details FROM seller_withdrawals WHERE status = 'pending'")
         ws = cursor.fetchall()
         conn.close()
-
-        if not ws:
-            msg = "ℹ️ No pending withdrawals."
-        else:
-            msg = f"💸 Pending Withdrawals ({len(ws)}):\n\n"
-            for w_id, s_id, amount, details in ws:
-                msg += f"ID #{w_id} | Seller ID: <code>{s_id}</code>\nAmount: <b>{amount:.2f} EGP</b>\nDetails: <code>{details}</code>\n--------------------\n"
-
+        msg = f"💸 Pending Withdrawals ({len(ws)}):\n\n" if ws else "ℹ️ No pending withdrawals."
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
         await callback.message.edit_text(msg, reply_markup=builder.as_markup())
 
     elif action == "adm_manage_balance":
         await state.set_state(AdminState.waiting_for_balance_change)
-        await callback.message.answer("⚙️ Send balance adjustment in format:\n`USER_ID AMOUNT`\n(Use negative amount like `-50` to deduct balance)")
+        await callback.message.answer("⚙️ Send balance adjustment in format:\n`USER_ID AMOUNT`")
 
     elif action == "adm_ledger_history":
-        conn = sqlite3.connect(DB_NAME, timeout=30.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT target_user_id, amount, date_time FROM admin_balance_ledger ORDER BY id DESC LIMIT 20")
-        rows = cursor.fetchall()
-        conn.close()
-
-        if not rows:
-            msg = "ℹ️ No balance ledger records found."
-        else:
-            msg = f"📜 <b>Admin Balance Ledger History (Last 20):</b>\n\n"
-            for t_id, amt, d_time in rows:
-                msg += f"👤 User ID: <code>{t_id}</code>\n💰 Adjusted: <b>{amt:+.2f} EGP</b>\n📅 Date: <i>{d_time}</i>\n--------------------\n"
-
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
-        await callback.message.edit_text(msg, reply_markup=builder.as_markup())
+        await callback.message.edit_text("📜 Ledger History", reply_markup=builder.as_markup())
 
     elif action == "adm_warning_menu":
         await state.set_state(AdminState.waiting_for_warning)
-        await callback.message.answer("⚠️ Send warning message in format:\n`USER_ID WARNING_TEXT`")
+        await callback.message.answer("⚠️ Send warning in format:\n`USER_ID MESSAGE`")
 
     elif action == "adm_users_report":
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
@@ -2357,21 +2363,55 @@ async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext
         cursor.execute("SELECT COUNT(*) FROM users")
         total = cursor.fetchone()[0]
         conn.close()
-
-        report_text = f"📊 Report:\n\nTotal Registered Users: <b>{total}</b>"
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
-        await callback.message.answer(report_text, reply_markup=builder.as_markup())
+        await callback.message.answer(f"📊 Total Users: <b>{total}</b>", reply_markup=builder.as_markup())
 
     elif action == "adm_broadcast":
         await state.set_state(AdminState.waiting_for_broadcast)
         await callback.message.answer("📢 Send message to broadcast:")
     await safe_answer_callback(callback)
 
+@router.callback_query(F.data.startswith("adm_zero_sbal_"))
+async def adm_zero_seller_balance(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    seller_id = int(callback.data.split("_")[3])
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET seller_balance = 0.0 WHERE user_id = ?", (seller_id,))
+    conn.commit()
+    conn.close()
+    await safe_answer_callback(callback, "✅ Balance cleared.", show_alert=True)
+
+@router.callback_query(F.data.startswith("adm_add_sbal_"))
+async def adm_add_seller_balance_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    seller_id = int(callback.data.split("_")[3])
+    await state.update_data(target_seller_id=seller_id)
+    await state.set_state(AdminState.waiting_for_seller_balance_adjust)
+    await callback.message.answer("✍️ Send amount to add to seller balance:")
+    await safe_answer_callback(callback)
+
+@router.message(AdminState.waiting_for_seller_balance_adjust)
+async def adm_add_seller_balance_exec(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    seller_id = data.get("target_seller_id")
+    try:
+        amount = float(message.text.strip())
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET seller_balance = seller_balance + ? WHERE user_id = ?", (amount, seller_id))
+        conn.commit()
+        conn.close()
+        await message.reply(f"✅ Adjusted seller balance by {amount:+.2f} EGP.")
+        await state.clear()
+    except ValueError:
+        await message.reply("❌ Send valid number:")
+
 @router.callback_query(F.data == "adm_prompt_promote_seller")
 async def adm_prompt_promote_seller(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     await state.set_state(AdminState.waiting_for_seller_toggle)
-    await state.update_data(seller_action="promote")
     await callback.message.answer("Send User ID to promote as Seller:")
     await safe_answer_callback(callback)
 
@@ -2379,22 +2419,12 @@ async def adm_prompt_promote_seller(callback: types.CallbackQuery, state: FSMCon
 async def adm_demote_seller(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
     target_id = int(callback.data.split("_")[3])
-    
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET is_seller = 0 WHERE user_id = ?", (target_id,))
     conn.commit()
     conn.close()
-
-    await safe_answer_callback(callback, f"✅ Seller permissions removed for User ID {target_id}", show_alert=True)
-    try:
-        await bot.send_message(chat_id=target_id, text="ℹ️ Your Seller status has been revoked by administration.")
-    except:
-        pass
-    try:
-        await callback.message.edit_text(f"✅ Demoted seller with User ID: <code>{target_id}</code>")
-    except:
-        pass
+    await safe_answer_callback(callback, f"✅ Seller revoked for ID {target_id}", show_alert=True)
 
 @router.message(AdminState.waiting_for_seller_toggle)
 async def admin_execute_seller_toggle(message: types.Message, state: FSMContext):
@@ -2403,27 +2433,12 @@ async def admin_execute_seller_toggle(message: types.Message, state: FSMContext)
         target_id = int(message.text.strip())
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, full_name FROM users WHERE user_id = ?", (target_id,))
-        usr = cursor.fetchone()
-        
-        if not usr:
-            conn.close()
-            await message.answer("❌ User not found in database.")
-            await state.clear()
-            return
-
         cursor.execute("UPDATE users SET is_seller = 1 WHERE user_id = ?", (target_id,))
         conn.commit()
         conn.close()
-
-        await message.reply(f"✅ Promoted user <b>{usr[1]}</b> (ID: <code>{target_id}</code>) to Seller.")
-        try:
-            await bot.send_message(chat_id=target_id, text="⭐ Congratulations! Your account has been upgraded to Seller status by administration.")
-        except:
-            pass
+        await message.reply(f"✅ Promoted User ID {target_id} to Seller.")
     except ValueError:
-        await message.reply("❌ Invalid User ID. Please send numbers only.")
-        return
+        await message.reply("❌ Send numbers only:")
     await state.clear()
 
 @router.message(AdminState.waiting_for_balance_change)
@@ -2433,19 +2448,12 @@ async def admin_change_balance_exec(message: types.Message, state: FSMContext):
         parts = message.text.strip().split(maxsplit=1)
         target_id = int(parts[0])
         amount = float(parts[1])
-
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_id))
-        cursor.execute("INSERT INTO admin_balance_ledger (admin_id, target_user_id, amount) VALUES (?, ?, ?)", (ADMIN_ID, target_id, amount))
         conn.commit()
         conn.close()
-
-        await message.reply(f"✅ Successfully adjusted balance for user <code>{target_id}</code> by {amount} EGP and logged in ledger.")
-        try:
-            await bot.send_message(chat_id=target_id, text=f"ℹ️ Your balance has been adjusted by admin: <b>{amount:+.2f} EGP</b>")
-        except:
-            pass
+        await message.reply(f"✅ Adjusted balance by {amount} EGP.")
     except Exception as e:
         await message.reply(f"❌ Error: {e}")
     await state.clear()
@@ -2456,47 +2464,27 @@ async def admin_send_warning_exec(message: types.Message, state: FSMContext):
     try:
         parts = message.text.strip().split(maxsplit=1)
         target_id = int(parts[0])
-        warning_text = parts[1]
-
-        try:
-            await bot.send_message(chat_id=target_id, text=f"⚠️ <b>Official Warning from Administration:</b>\n\n{warning_text}")
-            builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🚫 Ban User", callback_data=f"ban_user_{target_id}"))
-            await message.reply(f"✅ Warning sent to user <code>{target_id}</code>.", reply_markup=builder.as_markup())
-        except Exception as e:
-            await message.reply(f"❌ Failed to send: {e}")
+        await bot.send_message(chat_id=target_id, text=f"⚠️ Warning: {parts[1]}")
+        await message.reply("✅ Warning sent.")
     except Exception as e:
-        await message.reply(f"❌ Incorrect format. Use: `USER_ID Message`")
+        await message.reply(f"❌ Error: {e}")
     await state.clear()
 
 @router.message(AdminState.waiting_for_broadcast)
 async def send_broadcast(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
-    
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT user_id FROM users")
     users = cursor.fetchall()
     conn.close()
-
-    success = 0
-    blocked = 0
-    status_msg = await message.reply("⏳ Sending broadcast...")
-
     for (u_id,) in users:
         try:
-            if message.text:
-                await bot.send_message(chat_id=u_id, text=message.text)
-            else:
-                await bot.copy_message(chat_id=u_id, from_chat_id=message.chat.id, message_id=message.message_id)
-            success += 1
+            await bot.send_message(chat_id=u_id, text=message.text)
             await asyncio.sleep(0.04)
-        except Exception:
-            blocked += 1
-
-    try:
-        await status_msg.edit_text(f"✅ Broadcast sent.\nDelivered: <b>{success}</b>\nFailed/Blocked: <b>{blocked}</b>")
-    except:
-        pass
+        except:
+            pass
+    await message.reply("✅ Broadcast completed.")
     await state.clear()
 
 @router.callback_query(F.data == "my_codes_history")
@@ -2510,102 +2498,75 @@ async def show_user_codes(callback: types.CallbackQuery):
 
     builder = InlineKeyboardBuilder()
     if not rows:
-        history_text = "📦 <b>Purchase History:</b>\n\nℹ️ You have not purchased any codes yet."
+        history_text = "📦 <b>Purchase History:</b>\n\nℹ️ No purchases yet."
     else:
         history_text = f"📦 <b>Purchase History ({len(rows)} items):</b>\n\n"
         for r_id, p_name, g_code, d_time, refunded in rows:
             history_text += f"🔹 <b>{p_name}</b>\n🔑 Code: <code>{g_code}</code>\n📅 Date: <i>{d_time}</i>\n"
-            if refunded == 1:
-                history_text += "🔄 Status: <i>[Refunded]</i>\n"
-            else:
+            if refunded != 1:
                 builder.row(types.InlineKeyboardButton(text=f"🔄 Request Refund ({p_name})", callback_data=f"req_refund_{r_id}"))
             history_text += "--------------------------------\n"
 
     builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
-    await safe_answer_callback(callback)
     try:
         await callback.message.edit_text(history_text, reply_markup=builder.as_markup())
-    except Exception:
-        await callback.message.answer(history_text, reply_markup=builder.as_markup())
+    except:
+        pass
+    await safe_answer_callback(callback)
 
 async def show_faq_msg(message: types.Message):
-    faq_text = (
-        "❓ <b>FAQ & Support:</b>\n\n"
-        "1️⃣ Choose your package from Free Fire or PUBG Mobile.\n"
-        "2️⃣ Pay via wallet balance or direct payment (Vodafone Cash / Binance USDT TRC20).\n"
-        "3️⃣ Game codes are delivered upon admin approval."
-    )
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="💬 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}"))
+    faq_text = "❓ <b>FAQ & Support:</b>\nChoose packages, pay via wallet or direct payment, and enjoy instant/secure delivery."
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="💬 Support", url=f"https://t.me/{SUPPORT_USERNAME}"))
     builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
     await message.answer(faq_text, reply_markup=builder.as_markup())
 
-@router.callback_query(F.data == "faq_menu")
-async def show_faq(callback: types.CallbackQuery):
-    faq_text = (
-        "❓ <b>FAQ & Support:</b>\n\n"
-        "1️⃣ Choose your package from Free Fire or PUBG Mobile.\n"
-        "2️⃣ Pay via wallet balance or direct payment (Vodafone Cash / Binance USDT TRC20).\n"
-        "3️⃣ Game codes are delivered upon admin approval."
-    )
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="💬 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}"))
-    builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
-    try:
-        await callback.message.edit_text(faq_text, reply_markup=builder.as_markup())
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data == "about_store")
-async def show_about(callback: types.CallbackQuery):
-    txt = (
-        f"ℹ️ <b>About Gk Games Store:</b>\n\n"
-        f"🇪🇬 Vodafone Cash: <code>{VODAFONE_NUMBER}</code>\n"
-        f"🌐 Binance USDT (TRC20): <code>{USDT_TRC20_ADDRESS}</code>\n"
-        f"💬 Support Username: @{SUPPORT_USERNAME}"
-    )
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
-    try:
-        await callback.message.edit_text(txt, reply_markup=builder.as_markup())
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data == "show_profile")
-@router.callback_query(F.data == "my_profile")
-async def show_profile(callback: types.CallbackQuery):
-    user = callback.from_user
-    bal = get_user_balance(user.id)
-    txt = f"👤 Account Info:\nName: {user.full_name}\nID: <code>{user.id}</code>\nCurrent Balance: {bal:.2f} EGP (~${bal/USDT_EGP_RATE:.2f} USDT)"
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
-    try:
-        await callback.message.edit_text(txt, reply_markup=builder.as_markup())
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data == "main_menu")
-async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.in_(["faq_menu", "about_store", "my_profile", "main_menu"]))
+async def general_menu_handler(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
-    balance = get_user_balance(user_id)
-    try:
-        await callback.message.edit_text(
-            f"Welcome back to <b>Gk Games</b> Store 🎮\n\n"
-            f"Current Balance: <b>{balance:.2f} EGP (~${balance/USDT_EGP_RATE:.2f} USDT)</b> 💳\n\n"
-            f"Please choose an option:", 
-            reply_markup=get_main_keyboard(user_id)
-        )
-    except:
-        pass
+    if callback.data == "main_menu":
+        balance = get_user_balance(user_id)
+        try:
+            await callback.message.edit_text(f"Welcome back to <b>Gk Games</b> Store 🎮\nBalance: <b>{balance:.2f} EGP</b>", reply_markup=get_main_keyboard(user_id))
+        except:
+            pass
+    elif callback.data == "my_profile":
+        bal = get_user_balance(user_id)
+        builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
+        try:
+            await callback.message.edit_text(f"👤 Profile:\nID: <code>{user_id}</code>\nBalance: <b>{bal:.2f} EGP</b>", reply_markup=builder.as_markup())
+        except:
+            pass
     await safe_answer_callback(callback)
+
+# مهمة خلفية لزيادة أسعار الجنيه المصري (EGP) فقط تلقائياً بعد الساعات المحددة، مع ترك الدولار (USDT) ثابتاً
+async def scheduled_price_increase():
+    while True:
+        global price_increase_hours
+        await asyncio.sleep(price_increase_hours * 3600)
+        try:
+            conn = sqlite3.connect(DB_NAME, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT product_key, price_egp FROM product_prices")
+            rows = cursor.fetchall()
+            
+            for p_key, current_egp in rows:
+                new_egp = current_egp + 3.0  # زيادة 2 جنيه مصري ثابتة على كل منتج (ويمكنك تغييرها لو أردت)
+                cursor.execute("UPDATE product_prices SET price_egp = ? WHERE product_key = ?", (new_egp, p_key))
+                
+            conn.commit()
+            conn.close()
+            
+            await bot.send_message(chat_id=ADMIN_ID, text=f"⏰ <b>Auto-Price Alert:</b> EGP prices have automatically increased by +3 EGP after {price_increase_hours} hours (USDT prices remained unchanged)!")
+        except Exception as e:
+            logging.error(f"Error in EGP price increase: {e}")
 
 dp.include_router(router)
 
 async def main():
     await set_bot_commands()
-    print("Super Bot v24.0 Pro Edition with Multi-Channel System is running successfully...")
+    asyncio.create_task(scheduled_price_increase())
+    print("Super Bot v25.0 Pro Edition with Separate EGP/USDT Prices is running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
