@@ -1736,7 +1736,6 @@ async def process_buy_click(callback: types.CallbackQuery, state: FSMContext):
     title = PRODUCTS_TITLES.get(p_key, "Item")
     egp_price, usdt_price = get_product_prices(p_key)
     
-    # السعر المعتمد للشراء بالرصيد هو المصري (EGP)، والدفع الخارجي يقبل العملة المختارة
     await state.update_data(product_title=title, product_key=p_key, product_price_egp=egp_price, product_price_usdt=usdt_price, selected_currency=curr)
 
     builder = InlineKeyboardBuilder()
@@ -1761,7 +1760,7 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
     data = await state.get_data()
     prod_title = data.get("product_title", "Product")
     prod_key = data.get("product_key", "item")
-    price = data.get("product_price_egp", 0.0) # المحفظة تُخصم بالمصري EGP
+    price = data.get("product_price_egp", 0.0)
 
     if user_bal < price:
         await safe_answer_callback(callback, f"❌ Insufficient balance ({user_bal:.2f} EGP). Please deposit first.", show_alert=True)
@@ -1783,6 +1782,7 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
         await safe_answer_callback(callback, "⚠️ Sorry, stock just ran out! Your balance has been refunded.", show_alert=True)
         return
 
+    seller_info_str = "Admin Direct Stock 👑"
     if auto_seller_id > 0:
         sales_cnt = get_seller_data(auto_seller_id)[1]
         fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
@@ -1794,6 +1794,10 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
         cursor.execute("UPDATE users SET seller_balance = seller_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, auto_seller_id))
         conn.commit()
         conn.close()
+
+        s_bal, s_sales, _, s_name, s_uname = get_seller_data(auto_seller_id)
+        s_username_str = f"@{s_uname}" if s_uname and s_uname != "N/A" else "No Username"
+        seller_info_str = f"<b>{s_name}</b> ({s_username_str} | ID: <code>{auto_seller_id}</code>)"
 
         try:
             await bot.send_message(
@@ -1832,9 +1836,24 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
     except:
         pass
 
+    # إرسال التقرير المفصل للأدمن لعمليات الشراء بالرصيد
+    user_uname_str = f"@{user.username}" if user.username else "No Username"
+    admin_sale_notice = (
+        f"🛍️ <b>Instant Wallet Order Delivered!</b>\n\n"
+        f"👤 <b>Buyer Details:</b>\n"
+        f"• Name: <b>{user.full_name}</b>\n"
+        f"• Username: <b>{user_uname_str}</b>\n"
+        f"• ID: <code>{user.id}</code>\n\n"
+        f"📦 <b>Order Info:</b>\n"
+        f"• Product: <b>{prod_title}</b>\n"
+        f"• Code: <code>{auto_code}</code>\n"
+        f"• Price: <b>{price:.2f} EGP</b>\n\n"
+        f"🏷️ <b>Seller Source:</b> {seller_info_str}"
+    )
+
     try:
         await bot.send_message(chat_id=DELIVERY_PROOF_CHANNEL_ID, text=f"✅ Instant Wallet Order Delivered.\nProduct: {prod_title}")
-        await bot.send_message(chat_id=ADMIN_ID, text=f"🛍️ <b>Instant Wallet Purchase!</b>\nBuyer: {user.full_name} (ID: <code>{user.id}</code>)\nProduct: {prod_title}\nCode: <code>{auto_code}</code>")
+        await bot.send_message(chat_id=ADMIN_ID, text=admin_sale_notice)
     except:
         pass
 
@@ -1982,7 +2001,16 @@ async def deliver_order(order_id, game_code, message_obj):
 
     target_user_id, product_name, product_key, user_username, seller_id, item_price, payment_type, _ = order_data
 
-    seller_info_str = "Admin Direct Stock"
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("SELECT full_name, username FROM users WHERE user_id = ?", (target_user_id,))
+    b_row = cursor.fetchone()
+    conn.close()
+    
+    b_name = b_row[0] if b_row else "Unknown"
+    b_uname = f"@{b_row[1]}" if b_row and b_row[1] else "No Username"
+
+    seller_info_str = "Admin Direct Stock 👑"
     if seller_id > 0 and item_price > 0:
         seller_bal, sales_cnt, _, s_name, s_uname = get_seller_data(seller_id)
         fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
@@ -1994,6 +2022,9 @@ async def deliver_order(order_id, game_code, message_obj):
         cursor.execute("UPDATE users SET seller_balance = seller_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, seller_id))
         conn.commit()
         conn.close()
+
+        s_username_str = f"@{s_uname}" if s_uname and s_uname != "N/A" else "No Username"
+        seller_info_str = f"<b>{s_name}</b> ({s_username_str} | ID: <code>{seller_id}</code>)"
 
         try:
             await bot.send_message(
@@ -2033,12 +2064,27 @@ async def deliver_order(order_id, game_code, message_obj):
             reply_markup=builder.as_markup()
         )
         
-        delivery_channel_msg = f"✅ New order delivered.\nProduct: {product_name}"
         try:
-            await bot.send_message(chat_id=DELIVERY_PROOF_CHANNEL_ID, text=delivery_channel_msg)
+            await bot.send_message(chat_id=DELIVERY_PROOF_CHANNEL_ID, text=f"✅ New order delivered.\nProduct: {product_name}")
         except Exception as e:
             logging.error(f"Failed to send to delivery proof channel: {e}")
+
+        # التقرير التفصيلي الكامل للبيع الشامل لجميع البيانات الموجه للأدمن
+        admin_sale_notice = (
+            f"🛍️ <b>Order #{order_id} Delivered Successfully!</b>\n\n"
+            f"👤 <b>Buyer Details:</b>\n"
+            f"• Name: <b>{b_name}</b>\n"
+            f"• Username: <b>{b_uname}</b>\n"
+            f"• ID: <code>{target_user_id}</code>\n\n"
+            f"📦 <b>Order Info:</b>\n"
+            f"• Product: <b>{product_name}</b>\n"
+            f"• Code: <code>{game_code}</code>\n"
+            f"• Price: <b>{item_price:.2f} EGP</b>\n\n"
+            f"🏷️ <b>Seller Source:</b> {seller_info_str}"
+        )
         
+        await bot.send_message(chat_id=ADMIN_ID, text=admin_sale_notice)
+
         delete_active_order(order_id)
         if isinstance(message_obj, types.Message):
             await message_obj.reply(f"✅ Code delivered for order #{order_id}.")
@@ -2539,7 +2585,7 @@ async def general_menu_handler(callback: types.CallbackQuery, state: FSMContext)
             pass
     await safe_answer_callback(callback)
 
-# مهمة خلفية لزيادة أسعار الجنيه المصري (EGP) فقط تلقائياً بعد الساعات المحددة، مع ترك الدولار (USDT) ثابتاً
+# مهمة خلفية لزيادة أسعار الجنيه المصري (EGP) فقط تلقائياً (+3 ج) بعد الساعات المحددة، مع ترك الدولار (USDT) ثابتاً
 async def scheduled_price_increase():
     while True:
         global price_increase_hours
@@ -2551,7 +2597,7 @@ async def scheduled_price_increase():
             rows = cursor.fetchall()
             
             for p_key, current_egp in rows:
-                new_egp = current_egp + 3.0  # زيادة 2 جنيه مصري ثابتة على كل منتج (ويمكنك تغييرها لو أردت)
+                new_egp = current_egp + 3.0  # زيادة 3 جنيه مصري ثابتة على كل منتج
                 cursor.execute("UPDATE product_prices SET price_egp = ? WHERE product_key = ?", (new_egp, p_key))
                 
             conn.commit()
@@ -2566,7 +2612,7 @@ dp.include_router(router)
 async def main():
     await set_bot_commands()
     asyncio.create_task(scheduled_price_increase())
-    print("Super Bot v25.0 Pro Edition with Separate EGP/USDT Prices is running...")
+    print("Super Bot Pro Edition with Detailed Admin Reports is running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
