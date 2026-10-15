@@ -19,7 +19,6 @@ TOKEN = "8855603359:AAG5KiEcEZOVbrkCYuPOB9wusoZLL22Mlog"
 ADMIN_ID = 1332736076  
 SUPPORT_USERNAME = "GUODA36"
 
-# Payment Details
 VODAFONE_NUMBER = "01008924340"
 USDT_TRC20_ADDRESS = "TZFH6r1gLj94GWMqAQ71p3uixB7HTd9ZVL"
 
@@ -31,7 +30,6 @@ SELLER_MIN_WITHDRAW = 200.0
 DEFAULT_PLATFORM_FEE = 0.02  
 VIP_PLATFORM_FEE = 0.01      
 
-# Channels Setup
 LOG_CHANNEL_ID = -1004393845755      
 DELIVERY_PROOF_CHANNEL_ID = -1004490105003
 GUIDE_UPDATES_CHANNEL_ID = -1003836643803
@@ -63,7 +61,7 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 
-DB_NAME = "store_v23.db"
+DB_NAME = "store_v25_escrow.db"
 user_last_action = {}
 SPAM_DELAY = 1.0  
 maintenance_mode = False  
@@ -81,6 +79,7 @@ def init_db():
             has_purchased INTEGER DEFAULT 0,
             is_seller INTEGER DEFAULT 0,
             seller_balance REAL DEFAULT 0.0,
+            seller_pending_balance REAL DEFAULT 0.0,
             seller_sales_count INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active'
         )
@@ -120,24 +119,6 @@ def init_db():
         )
     """)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pending_stock (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seller_id INTEGER,
-            product_key TEXT,
-            code TEXT UNIQUE,
-            price REAL
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS admin_balance_ledger (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id INTEGER,
-            target_user_id INTEGER,
-            amount REAL,
-            date_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_codes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -154,9 +135,12 @@ def init_db():
             product_name TEXT,
             game_code TEXT,
             price REAL,
+            net_profit REAL DEFAULT 0.0,
             purchase_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             is_refunded INTEGER DEFAULT 0,
             rating INTEGER DEFAULT 0,
+            confirmed_delivery INTEGER DEFAULT 0,
+            escrow_released INTEGER DEFAULT 0,
             date_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -192,7 +176,9 @@ def init_db():
         cursor.execute("INSERT OR IGNORE INTO product_prices (product_key, price_egp, price_usdt) VALUES (?, ?, ?)", (p_key, egp_val, usdt_val))
 
     try:
-        cursor.execute("ALTER TABLE purchased_transactions ADD COLUMN rating INTEGER DEFAULT 0")
+        cursor.execute("ALTER TABLE users ADD COLUMN seller_pending_balance REAL DEFAULT 0.0")
+        cursor.execute("ALTER TABLE purchased_transactions ADD COLUMN net_profit REAL DEFAULT 0.0")
+        cursor.execute("ALTER TABLE purchased_transactions ADD COLUMN escrow_released INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
 
@@ -246,6 +232,8 @@ async def anti_spam_middleware(handler, event, data):
             if res and res[0] == 'blocked':
                 if isinstance(event, types.CallbackQuery):
                     await event.answer("You are blocked from using this bot.", show_alert=True)
+                elif isinstance(event, types.Message):
+                    await event.answer("🚫 You are blocked from using this bot.")
                 return
         except:
             pass
@@ -284,16 +272,16 @@ def get_seller_data(user_id):
     try:
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
-        cursor.execute("SELECT seller_balance, seller_sales_count, is_seller, full_name, username FROM users WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT seller_balance, seller_pending_balance, seller_sales_count, is_seller, full_name, username FROM users WHERE user_id = ?", (user_id,))
         res = cursor.fetchone()
         conn.close()
-        return res if res else (0.0, 0, 0, "Unknown", "N/A")
+        return res if res else (0.0, 0.0, 0, 0, "Unknown", "N/A")
     except:
-        return (0.0, 0, 0, "Unknown", "N/A")
+        return (0.0, 0.0, 0, 0, "Unknown", "N/A")
 
 def is_user_seller(user_id):
     if user_id == ADMIN_ID: return True
-    _, _, is_sell, _, _ = get_seller_data(user_id)
+    _, _, _, is_sell, _, _ = get_seller_data(user_id)
     return is_sell == 1
 
 def save_user(user_id, full_name, username):
@@ -304,7 +292,7 @@ def save_user(user_id, full_name, username):
     
     if not exists:
         cursor.execute(
-            "INSERT INTO users (user_id, full_name, username, balance, has_purchased, status) VALUES (?, ?, ?, 0.0, 0, 'active')",
+            "INSERT INTO users (user_id, full_name, username, balance, has_purchased, is_seller, seller_balance, seller_pending_balance, seller_sales_count, status) VALUES (?, ?, ?, 0.0, 0, 0, 0.0, 0.0, 0, 'active')",
             (user_id, full_name, username)
         )
     else:
@@ -349,13 +337,13 @@ def delete_active_order(order_id):
     conn.commit()
     conn.close()
 
-def save_user_purchased_code(user_id, product_name, game_code, seller_id=0, price=0.0):
+def save_user_purchased_code(user_id, product_name, game_code, seller_id=0, price=0.0, net_profit=0.0):
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("INSERT INTO user_codes (user_id, product_name, game_code, date_time) VALUES (?, ?, ?, ?)", (user_id, product_name, game_code, current_time))
-    cursor.execute("INSERT INTO purchased_transactions (user_id, seller_id, product_name, game_code, price, purchase_time, date_time) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                   (user_id, seller_id, product_name, game_code, price, current_time, current_time))
+    cursor.execute("INSERT INTO purchased_transactions (user_id, seller_id, product_name, game_code, price, net_profit, purchase_time, date_time, escrow_released) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)", 
+                   (user_id, seller_id, product_name, game_code, price, net_profit, current_time, current_time))
     trans_id = cursor.lastrowid
     conn.commit()
     conn.close()
@@ -452,6 +440,7 @@ class AdminState(StatesGroup):
     waiting_for_new_price_usdt = State()
     waiting_for_seller_balance_adjust = State()
     waiting_for_price_hours = State()
+    waiting_for_ban_user_id = State()
 
 class QuickSearchState(StatesGroup):
     waiting_for_player_id = State()
@@ -507,8 +496,19 @@ def get_main_keyboard(user_id):
     builder.row(types.InlineKeyboardButton(text="ℹ️ About Store", callback_data="about_store"))
     return builder.as_markup()
 
-def get_seller_keyboard():
+def get_seller_keyboard(user_id):
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM stock WHERE seller_id = ? AND status = 'active'", (user_id,))
+    active_stock_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*), SUM(price) FROM purchased_transactions WHERE seller_id = ? AND is_refunded = 0", (user_id,))
+    sales_row = cursor.fetchone()
+    conn.close()
+    
+    total_sales_cnt = sales_row[0] if sales_row and sales_row[0] else 0
+
     builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text=f"📊 Quick Stats: {total_sales_cnt} Sales | {active_stock_count} Stock Active", callback_data="seller_panel_btn"))
     builder.row(types.InlineKeyboardButton(text="➕ Add Stock Code", callback_data="seller_add_stock"))
     builder.row(types.InlineKeyboardButton(text="📋 My Stock", callback_data="seller_view_my_stock"))
     builder.row(types.InlineKeyboardButton(text="📊 My Sales History", callback_data="seller_sales_history"))
@@ -524,6 +524,7 @@ def get_admin_keyboard():
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📦 Add Stock", callback_data="adm_addstock"))
     builder.row(types.InlineKeyboardButton(text="📊 Stock Quick Overview", callback_data="adm_stock_overview"))
+    builder.row(types.InlineKeyboardButton(text="📋 View All Active Stock Codes", callback_data="adm_view_all_codes"))
     builder.row(types.InlineKeyboardButton(text="✏️ Edit Product Prices (EGP / USDT)", callback_data="adm_edit_prices_menu"))
     builder.row(types.InlineKeyboardButton(text="⏱️ Set EGP Price Increase Timer", callback_data="adm_set_timer"))
     builder.row(types.InlineKeyboardButton(text="📈 Comprehensive Sales Analytics", callback_data="adm_sales_analytics"))
@@ -534,8 +535,9 @@ def get_admin_keyboard():
     builder.row(types.InlineKeyboardButton(text="⏳ Pending Orders", callback_data="adm_pending_orders"))
     builder.row(types.InlineKeyboardButton(text="💸 Pending Withdrawals", callback_data="adm_pending_withdrawals"))
     builder.row(types.InlineKeyboardButton(text="⚙️ Add/Deduct Balance", callback_data="adm_manage_balance"))
+    builder.row(types.InlineKeyboardButton(text="🔨 Ban / Unban Users Menu", callback_data="adm_ban_menu"))
     builder.row(types.InlineKeyboardButton(text="📜 Admin Ledger History", callback_data="adm_ledger_history"))
-    builder.row(types.InlineKeyboardButton(text="⚠️ Send Warning / Ban", callback_data="adm_warning_menu"))
+    builder.row(types.InlineKeyboardButton(text="⚠️ Send Warning", callback_data="adm_warning_menu"))
     builder.row(types.InlineKeyboardButton(text="📊 Bot Users Report", callback_data="adm_users_report"))
     builder.row(types.InlineKeyboardButton(text="📢 Broadcast", callback_data="adm_broadcast"))
     builder.row(types.InlineKeyboardButton(text=maint_text, callback_data="adm_toggle_maintenance"))
@@ -548,9 +550,9 @@ async def cmd_seller(message: types.Message):
     if not is_user_seller(user_id):
         await message.answer("⚠️ You are not an authorized seller.")
         return
-    seller_bal, sales_cnt, _, _, _ = get_seller_data(user_id)
-    msg = f"🛠️ Seller Control Panel:\nTotal Sales: {sales_cnt}\nAvailable Profits: {seller_bal:.2f} EGP"
-    await message.answer(msg, reply_markup=get_seller_keyboard())
+    seller_bal, pending_bal, sales_cnt, _, _, _ = get_seller_data(user_id)
+    msg = f"🛠️ Seller Control Panel:\nTotal Sales: {sales_cnt}\nAvailable Balance: {seller_bal:.2f} EGP\n⏳ Pending Escrow Balance: {pending_bal:.2f} EGP"
+    await message.answer(msg, reply_markup=get_seller_keyboard(user_id))
 
 @router.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -620,7 +622,7 @@ async def cmd_deposit(message: types.Message, state: FSMContext):
     msg = (
         "💳 <b>Deposit & Top-up Balance:</b>\n\n"
         f"Minimum deposit limit: <b>{MIN_DEPOSIT_AMOUNT:.0f} EGP (~${MIN_DEPOSIT_AMOUNT/USDT_EGP_RATE:.1f} USDT)</b>\n"
-        "🔸 You can deposit any amount starting from 200 EGP with no upper limit!\n\n"
+        "🔸 No upper limit! You can deposit any amount you want.\n\n"
         "Choose a preset amount or type the amount directly in chat:"
     )
     await message.answer(msg, reply_markup=builder.as_markup())
@@ -720,10 +722,10 @@ async def open_seller_panel(callback: types.CallbackQuery):
         await safe_answer_callback(callback, "⚠️ Unauthorized!", show_alert=True)
         return
 
-    seller_bal, sales_cnt, _, _, _ = get_seller_data(user_id)
-    msg = f"🛠️ Seller Control Panel:\nTotal Sales: {sales_cnt}\nAvailable Profits: {seller_bal:.2f} EGP (~${seller_bal/USDT_EGP_RATE:.2f} USDT)"
+    seller_bal, pending_bal, sales_cnt, _, _, _ = get_seller_data(user_id)
+    msg = f"🛠️ Seller Control Panel:\nTotal Sales: {sales_cnt}\nAvailable Balance: {seller_bal:.2f} EGP\n⏳ Pending Escrow Balance: {pending_bal:.2f} EGP"
     try:
-        await callback.message.edit_text(msg, reply_markup=get_seller_keyboard())
+        await callback.message.edit_text(msg, reply_markup=get_seller_keyboard(user_id))
     except:
         pass
     await safe_answer_callback(callback)
@@ -1059,6 +1061,45 @@ async def admin_stock_overview(callback: types.CallbackQuery):
         pass
     await safe_answer_callback(callback)
 
+@router.callback_query(F.data == "adm_view_all_codes")
+async def admin_view_all_codes_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, product_key, code, seller_id FROM stock WHERE status = 'active' ORDER BY id DESC LIMIT 30")
+    rows = cursor.fetchall()
+    conn.close()
+
+    builder = InlineKeyboardBuilder()
+    if not rows:
+        msg = "ℹ️ No active stock codes found in database."
+    else:
+        msg = f"📋 <b>Active Stock Codes (Showing latest {len(rows)}):</b>\n\n"
+        for st_id, p_key, code_val, s_id in rows:
+            p_title = PRODUCTS_TITLES.get(p_key, p_key)
+            owner_str = "Admin 👑" if s_id == 0 else f"Seller ID {s_id}"
+            msg += f"• [{p_title}] <code>{code_val}</code> ({owner_str})\n"
+            builder.row(types.InlineKeyboardButton(text=f"🗑️ Delete [{p_title} | {code_val}]", callback_data=f"adm_del_any_st_{st_id}"))
+
+    builder.row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
+    try:
+        await callback.message.edit_text(msg, reply_markup=builder.as_markup())
+    except:
+        await callback.message.answer(msg, reply_markup=builder.as_markup())
+    await safe_answer_callback(callback)
+
+@router.callback_query(F.data.startswith("adm_del_any_st_"))
+async def admin_delete_any_stock_code(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    st_id = int(callback.data.split("_")[4])
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stock WHERE id = ?", (st_id,))
+    conn.commit()
+    conn.close()
+    await safe_answer_callback(callback, "✅ Code deleted successfully.", show_alert=True)
+    await admin_view_all_codes_handler(callback)
+
 @router.callback_query(F.data == "adm_net_profits")
 async def admin_net_profits_report(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -1071,7 +1112,7 @@ async def admin_net_profits_report(callback: types.CallbackQuery):
     month_ago = (now - timedelta(days=30)).strftime("%Y-%m-%d")
 
     def calc_profits(date_filter=None):
-        query = "SELECT seller_id, price FROM purchased_transactions WHERE is_refunded = 0"
+        query = "SELECT seller_id, price, net_profit FROM purchased_transactions WHERE is_refunded = 0"
         params = []
         if date_filter:
             if "%" in date_filter:
@@ -1086,11 +1127,11 @@ async def admin_net_profits_report(callback: types.CallbackQuery):
         commission_profits = 0.0
         direct_admin_profits = 0.0
         
-        for seller_id, price in rows:
+        for seller_id, price, n_profit in rows:
             if seller_id == 0:
                 direct_admin_profits += price
             else:
-                sales_cnt = get_seller_data(seller_id)[1]
+                sales_cnt = get_seller_data(seller_id)[2]
                 fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
                 commission_profits += (price * fee_rate)
                 
@@ -1162,7 +1203,7 @@ async def admin_sales_analytics(callback: types.CallbackQuery):
     msg += "\n⭐ <b>Sellers Performance:</b>\n"
     if seller_stats:
         for s_id, count, total_vol in seller_stats:
-            s_bal, s_sales, _, s_name, s_uname = get_seller_data(s_id)
+            s_bal, pending_bal, s_sales, _, s_name, s_uname = get_seller_data(s_id)
             fee_rate = VIP_PLATFORM_FEE if s_sales >= 50 else DEFAULT_PLATFORM_FEE
             store_comm = total_vol * fee_rate
             seller_net = total_vol - store_comm
@@ -1170,7 +1211,7 @@ async def admin_sales_analytics(callback: types.CallbackQuery):
                 f"👤 <b>{s_name}</b> (@{s_uname} | ID: <code>{s_id}</code>)\n"
                 f"   - Sales: <b>{count}</b>\n"
                 f"   - Volume: <b>{total_vol:.2f} EGP</b>\n"
-                f"   - Seller Profit: <b>{seller_net:.2f} EGP</b>\n"
+                f"   - Seller Net: <b>{seller_net:.2f} EGP</b>\n"
                 f"   - Store Commission: <b>{store_comm:.2f} EGP</b>\n"
                 f"--------------------\n"
             )
@@ -1258,7 +1299,7 @@ async def seller_sales_history_handler(callback: types.CallbackQuery):
     if not is_user_seller(user_id): return
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute("SELECT product_name, game_code, price, date_time FROM purchased_transactions WHERE seller_id = ? ORDER BY id DESC", (user_id,))
+    cursor.execute("SELECT product_name, game_code, price, date_time, escrow_released FROM purchased_transactions WHERE seller_id = ? ORDER BY id DESC", (user_id,))
     rows = cursor.fetchall()
     conn.close()
 
@@ -1266,8 +1307,9 @@ async def seller_sales_history_handler(callback: types.CallbackQuery):
         msg = "📊 <b>Your Sales History:</b>\n\nℹ️ No sales recorded yet."
     else:
         msg = f"📊 <b>Your Sales History ({len(rows)} items):</b>\n\n"
-        for p_name, g_code, price, d_time in rows:
-            msg += f"📦 Product: <b>{p_name}</b>\n🔑 Code Sold: <code>{g_code}</code>\n💰 Price: <b>{price} EGP</b>\n📅 Date: <i>{d_time}</i>\n--------------------\n"
+        for p_name, g_code, price, d_time, released in rows:
+            status_escrow = "🟢 Released" if released == 1 else "⏳ Pending Escrow"
+            msg += f"📦 Product: <b>{p_name}</b>\n🔑 Code: <code>{g_code}</code>\n💰 Price: <b>{price} EGP</b>\n📋 Escrow: <b>{status_escrow}</b>\n📅 Date: <i>{d_time}</i>\n--------------------\n"
 
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🛠️ Seller Panel", callback_data="seller_panel_btn"))
     try:
@@ -1304,11 +1346,16 @@ async def seller_financial_ledger_handler(callback: types.CallbackQuery):
 @router.callback_query(F.data == "seller_balance_menu")
 async def seller_balance_options(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    seller_bal, _, _, _, _ = get_seller_data(user_id)
+    seller_bal, pending_bal, _, _, _, _ = get_seller_data(user_id)
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="💸 Request Profit Withdrawal", callback_data="seller_withdraw_request"))
     builder.row(types.InlineKeyboardButton(text="🛠️ Seller Panel", callback_data="seller_panel_btn"))
     try:
-        await callback.message.edit_text(f"💰 Available Net Profits: <b>{seller_bal:.2f} EGP (~${seller_bal/USDT_EGP_RATE:.2f} USDT)</b>\n\n(Minimum withdrawal limit: <b>{SELLER_MIN_WITHDRAW} EGP</b>)", reply_markup=builder.as_markup())
+        await callback.message.edit_text(
+            f"💰 Available Balance: <b>{seller_bal:.2f} EGP (~${seller_bal/USDT_EGP_RATE:.2f} USDT)</b>\n"
+            f"⏳ Pending Escrow Balance: <b>{pending_bal:.2f} EGP</b>\n\n"
+            f"(Minimum withdrawal limit: <b>{SELLER_MIN_WITHDRAW} EGP</b>)", 
+            reply_markup=builder.as_markup()
+        )
     except:
         pass
     await safe_answer_callback(callback)
@@ -1316,9 +1363,9 @@ async def seller_balance_options(callback: types.CallbackQuery):
 @router.callback_query(F.data == "seller_withdraw_request")
 async def seller_withdraw_start(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    seller_bal, _, _, _, _ = get_seller_data(user_id)
+    seller_bal, _, _, _, _, _ = get_seller_data(user_id)
     if seller_bal < SELLER_MIN_WITHDRAW:
-        await safe_answer_callback(callback, f"⚠️ Profits are less than minimum limit ({SELLER_MIN_WITHDRAW} EGP).", show_alert=True)
+        await safe_answer_callback(callback, f"⚠️ Available balance is less than minimum limit ({SELLER_MIN_WITHDRAW} EGP). Note: Pending escrow balance cannot be withdrawn until released.", show_alert=True)
         return
     await state.set_state(SellerWithdrawState.waiting_for_seller_withdraw)
     try:
@@ -1334,7 +1381,7 @@ async def seller_withdraw_start(callback: types.CallbackQuery, state: FSMContext
 @router.message(SellerWithdrawState.waiting_for_seller_withdraw)
 async def seller_withdraw_finish(message: types.Message, state: FSMContext):
     user = message.from_user
-    seller_bal, _, _, _, _ = get_seller_data(user.id)
+    seller_bal, _, _, _, _, _ = get_seller_data(user.id)
 
     try:
         text_val = message.text.strip()
@@ -1371,8 +1418,8 @@ async def seller_withdraw_finish(message: types.Message, state: FSMContext):
     
     builder = InlineKeyboardBuilder()
     builder.row(
-        types.InlineKeyboardButton(text="✅ Approve Withdrawal", callback_data=f"adm_app_w_{w_id}_{user.id}_{int(withdraw_amount)}"),
-        types.InlineKeyboardButton(text="❌ Reject Withdrawal", callback_data=f"adm_rej_w_{w_id}_{user.id}")
+        types.InlineKeyboardButton(text="✅ موافقة وتحويل الفلوس", callback_data=f"adm_app_w_{w_id}_{user.id}_{withdraw_amount}"),
+        types.InlineKeyboardButton(text="❌ رفض الطلب وإرجاع المبلغ", callback_data=f"adm_rej_w_{w_id}_{user.id}_{withdraw_amount}")
     )
     
     await bot.send_message(
@@ -1397,11 +1444,11 @@ async def admin_approve_withdrawal(callback: types.CallbackQuery):
     conn.close()
 
     try:
-        await bot.send_message(chat_id=seller_id, text=f"✅ Your withdrawal request of <b>{amount:.2f} EGP</b> has been approved and processed.")
+        await bot.send_message(chat_id=seller_id, text=f"✅ Your withdrawal request of <b>{amount:.2f} EGP</b> has been approved and processed successfully!")
     except:
         pass
     try:
-        await callback.message.edit_text(callback.message.text + "\n\n✅ Approved.")
+        await callback.message.edit_text(callback.message.text + "\n\n✅ Approved & Transferred.")
     except:
         pass
     await safe_answer_callback(callback, "Approved successfully.")
@@ -1412,20 +1459,17 @@ async def admin_reject_withdrawal(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     w_id = int(parts[3])
     seller_id = int(parts[4])
+    amount = float(parts[5])
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute("SELECT amount FROM seller_withdrawals WHERE id = ?", (w_id,))
-    row = cursor.fetchone()
-    if row:
-        refund_amt = row[0]
-        cursor.execute("UPDATE users SET seller_balance = seller_balance + ? WHERE user_id = ?", (refund_amt, seller_id))
+    cursor.execute("UPDATE users SET seller_balance = seller_balance + ? WHERE user_id = ?", (amount, seller_id))
     cursor.execute("UPDATE seller_withdrawals SET status = 'rejected' WHERE id = ?", (w_id,))
     conn.commit()
     conn.close()
 
     try:
-        await bot.send_message(chat_id=seller_id, text="❌ Your withdrawal request was rejected by admin and amount returned to your seller balance.")
+        await bot.send_message(chat_id=seller_id, text=f"❌ Your withdrawal request was rejected by admin and <b>{amount:.2f} EGP</b> returned to your available balance.")
     except:
         pass
     try:
@@ -1785,54 +1829,48 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
         return
 
     seller_info_str = "Admin Direct Stock 👑"
+    net_profit = 0.0
     if auto_seller_id > 0:
-        sales_cnt = get_seller_data(auto_seller_id)[1]
+        sales_cnt = get_seller_data(auto_seller_id)[2]
         fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
         store_commission = price * fee_rate
         net_profit = price - store_commission
         
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET seller_balance = seller_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, auto_seller_id))
+        cursor.execute("UPDATE users SET seller_pending_balance = seller_pending_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, auto_seller_id))
         conn.commit()
         conn.close()
 
-        s_bal, s_sales, _, s_name, s_uname = get_seller_data(auto_seller_id)
+        s_bal, pending_bal, s_sales, _, s_name, s_uname = get_seller_data(auto_seller_id)
         s_username_str = f"@{s_uname}" if s_uname and s_uname != "N/A" else "No Username"
         seller_info_str = f"<b>{s_name}</b> ({s_username_str} | ID: <code>{auto_seller_id}</code>)"
 
         try:
             await bot.send_message(
                 chat_id=auto_seller_id, 
-                text=f"🎉 <b>One of your stock items was sold!</b>\n\n📦 Product: <b>{prod_title}</b>\n🔑 Code Sold: <code>{auto_code}</code>\n💰 Net Profit: <b>{net_profit:.2f} EGP</b>"
+                text=f"🎉 <b>One of your stock items was sold!</b>\n\n📦 Product: <b>{prod_title}</b>\n🔑 Code Sold: <code>{auto_code}</code>\n⏳ Net Profit Added to Escrow: <b>{net_profit:.2f} EGP</b> (will be released upon buyer confirmation or after 1 hour)."
             )
         except:
             pass
 
     trans_id = 0
     try:
-        trans_id = save_user_purchased_code(user.id, prod_title, auto_code, auto_seller_id, price)
+        trans_id = save_user_purchased_code(user.id, prod_title, auto_code, auto_seller_id, price, net_profit)
     except:
         pass
 
     builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="✅ تأكيد شحن الكود بنجاح", callback_data=f"confirm_deliv_{trans_id}"))
     if trans_id > 0:
         builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
-    
-    builder.row(
-        types.InlineKeyboardButton(text="⭐ 1", callback_data=f"rate_{trans_id}_1"),
-        types.InlineKeyboardButton(text="⭐ 2", callback_data=f"rate_{trans_id}_2"),
-        types.InlineKeyboardButton(text="⭐ 3", callback_data=f"rate_{trans_id}_3"),
-        types.InlineKeyboardButton(text="⭐ 4", callback_data=f"rate_{trans_id}_4"),
-        types.InlineKeyboardButton(text="⭐ 5", callback_data=f"rate_{trans_id}_5")
-    )
 
     try:
         await callback.message.edit_text(
             f"✅ <b>Purchase successful!</b>\n\n"
             f"📦 Product: <b>{prod_title}</b>\n"
             f"🔑 Code: <code>{auto_code}</code>\n\n"
-            f"🌟 Please rate our service below:",
+            f"👇 اضغط على الزر أدناه لتأكيد شحن الكود وتقييم الخدمة:",
             reply_markup=builder.as_markup()
         )
     except:
@@ -1860,6 +1898,49 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
 
     await state.clear()
     await safe_answer_callback(callback)
+
+@router.callback_query(F.data.startswith("confirm_deliv_"))
+async def process_confirm_delivery(callback: types.CallbackQuery):
+    trans_id = int(callback.data.split("_")[2])
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("SELECT seller_id, net_profit, escrow_released FROM purchased_transactions WHERE id = ? AND user_id = ?", (trans_id, callback.from_user.id))
+    row = cursor.fetchone()
+    
+    if row:
+        seller_id, net_profit, released = row
+        if released == 0 and seller_id > 0:
+            cursor.execute("UPDATE purchased_transactions SET confirmed_delivery = 1, escrow_released = 1 WHERE id = ?", (trans_id,))
+            cursor.execute("UPDATE users SET seller_pending_balance = seller_pending_balance - ?, seller_balance = seller_balance + ? WHERE user_id = ?", (net_profit, net_profit, seller_id))
+            conn.commit()
+            
+            try:
+                await bot.send_message(chat_id=seller_id, text=f"✅ <b>Escrow Released!</b>\nBuyer confirmed delivery for transaction #{trans_id}. Net profit of <b>{net_profit:.2f} EGP</b> has been moved to your available balance!")
+            except:
+                pass
+        else:
+            cursor.execute("UPDATE purchased_transactions SET confirmed_delivery = 1 WHERE id = ?", (trans_id,))
+            conn.commit()
+            
+    conn.close()
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="⭐ 1", callback_data=f"rate_{trans_id}_1"),
+        types.InlineKeyboardButton(text="⭐ 2", callback_data=f"rate_{trans_id}_2"),
+        types.InlineKeyboardButton(text="⭐ 3", callback_data=f"rate_{trans_id}_3"),
+        types.InlineKeyboardButton(text="⭐ 4", callback_data=f"rate_{trans_id}_4"),
+        types.InlineKeyboardButton(text="⭐ 5", callback_data=f"rate_{trans_id}_5")
+    )
+    
+    try:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n✅ <b>تم تأكيد شحن الكود بنجاح وتحرير الرصيد للبائع!</b>\n\n🌟 يُرجى تقييم تجربتك معنا:",
+            reply_markup=builder.as_markup()
+        )
+    except:
+        pass
+    await safe_answer_callback(callback, "✅ شكراً لك! تم تأكيد الشحن.", show_alert=True)
 
 @router.callback_query(F.data == "pay_method_external")
 async def process_pay_external_request(callback: types.CallbackQuery, state: FSMContext):
@@ -2012,47 +2093,42 @@ async def deliver_order(order_id, game_code, message_obj):
     b_uname = f"@{b_row[1]}" if b_row and b_row[1] else "No Username"
 
     seller_info_str = "Admin Direct Stock 👑"
+    net_profit = 0.0
     if seller_id > 0 and item_price > 0:
-        seller_bal, sales_cnt, _, s_name, s_uname = get_seller_data(seller_id)
+        sales_cnt = get_seller_data(seller_id)[2]
         fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
         store_commission = item_price * fee_rate
         net_profit = item_price - store_commission
         
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET seller_balance = seller_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, seller_id))
+        cursor.execute("UPDATE users SET seller_pending_balance = seller_pending_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, seller_id))
         conn.commit()
         conn.close()
 
+        s_bal, pending_bal, s_sales, _, s_name, s_uname = get_seller_data(seller_id)
         s_username_str = f"@{s_uname}" if s_uname and s_uname != "N/A" else "No Username"
         seller_info_str = f"<b>{s_name}</b> ({s_username_str} | ID: <code>{seller_id}</code>)"
 
         try:
             await bot.send_message(
                 chat_id=seller_id, 
-                text=f"🎉 <b>One of your stock items was sold!</b>\n\n📦 Product: <b>{product_name}</b>\n🔑 Code Sold: <code>{game_code}</code>\n💰 Net Profit: <b>{net_profit:.2f} EGP</b>"
+                text=f"🎉 <b>One of your stock items was sold!</b>\n\n📦 Product: <b>{product_name}</b>\n🔑 Code Sold: <code>{game_code}</code>\n⏳ Net Profit Added to Escrow: <b>{net_profit:.2f} EGP</b>"
             )
         except:
             pass
 
     trans_id = 0
     try:
-        trans_id = save_user_purchased_code(target_user_id, product_name, game_code, seller_id, item_price)
+        trans_id = save_user_purchased_code(target_user_id, product_name, game_code, seller_id, item_price, net_profit)
     except:
         pass
 
     try:
         builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="✅ تأكيد شحن الكود بنجاح", callback_data=f"confirm_deliv_{trans_id}"))
         if trans_id > 0:
             builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
-        
-        builder.row(
-            types.InlineKeyboardButton(text="⭐ 1", callback_data=f"rate_{trans_id}_1"),
-            types.InlineKeyboardButton(text="⭐ 2", callback_data=f"rate_{trans_id}_2"),
-            types.InlineKeyboardButton(text="⭐ 3", callback_data=f"rate_{trans_id}_3"),
-            types.InlineKeyboardButton(text="⭐ 4", callback_data=f"rate_{trans_id}_4"),
-            types.InlineKeyboardButton(text="⭐ 5", callback_data=f"rate_{trans_id}_5")
-        )
         
         await bot.send_message(
             chat_id=target_user_id, 
@@ -2060,7 +2136,7 @@ async def deliver_order(order_id, game_code, message_obj):
                 f"✅ Your order has been approved and delivered!\n\n"
                 f"📦 Product: <b>{product_name}</b>\n"
                 f"🔑 Code: <code>{game_code}</code>\n\n"
-                f"🌟 Please take a moment to rate our service below:"
+                f"👇 اضغط على تأكيد الشحن أدناه بعد إتمام التجربة:"
             ), 
             reply_markup=builder.as_markup()
         )
@@ -2181,29 +2257,28 @@ async def admin_approve_refund(callback: types.CallbackQuery):
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, seller_id, price, is_refunded, product_name, game_code FROM purchased_transactions WHERE id = ?", (trans_id,))
+    cursor.execute("SELECT user_id, seller_id, price, net_profit, is_refunded, product_name, game_code, escrow_released FROM purchased_transactions WHERE id = ?", (trans_id,))
     row = cursor.fetchone()
 
-    if not row or row[3] == 1:
+    if not row or row[4] == 1:
         conn.close()
         await safe_answer_callback(callback, "⚠️ Request already processed.", show_alert=True)
         return
 
-    user_id, seller_id, price, _, product_name, game_code = row
+    user_id, seller_id, price, net_profit, _, product_name, game_code, released = row
     cursor.execute("UPDATE purchased_transactions SET is_refunded = 1 WHERE id = ?", (trans_id,))
     cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (price, user_id))
     
     if seller_id > 0:
-        sales_cnt = get_seller_data(seller_id)[1]
-        fee_rate = VIP_PLATFORM_FEE if sales_cnt >= 50 else DEFAULT_PLATFORM_FEE
-        net_seller_deduct = price - (price * fee_rate)
-        cursor.execute("UPDATE users SET seller_balance = seller_balance - ? WHERE user_id = ?", (net_seller_deduct, seller_id))
+        if released == 1:
+            cursor.execute("UPDATE users SET seller_balance = seller_balance - ? WHERE user_id = ?", (net_profit, seller_id))
+        else:
+            cursor.execute("UPDATE users SET seller_pending_balance = seller_pending_balance - ? WHERE user_id = ?", (net_profit, seller_id))
 
-        # إرسال إشعار للسيلر بأنه تم استرداد الأموال وخصم حق الكارت من أرباحه
         try:
             await bot.send_message(
                 chat_id=seller_id,
-                text=f"⚠️ <b>Notice: Refund Processed</b>\n\nProduct: <b>{product_name}</b>\nCode: <code>{game_code}</code>\n\nFunds have been refunded to the customer, and <b>{net_seller_deduct:.2f} EGP</b> has been deducted from your seller balance."
+                text=f"⚠️ <b>Notice: Refund Processed</b>\n\nProduct: <b>{product_name}</b>\nCode: <code>{game_code}</code>\n\nFunds have been refunded to the customer, and <b>{net_profit:.2f} EGP</b> has been deducted from your balance/escrow."
             )
         except:
             pass
@@ -2211,7 +2286,6 @@ async def admin_approve_refund(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
 
-    # إرسال إشعار للزبون بأنه تم استرداد الأموال لمحفظته
     try:
         await bot.send_message(
             chat_id=user_id,
@@ -2358,7 +2432,7 @@ async def admin_delete_seller_stock_code(callback: types.CallbackQuery):
     callback.data = f"adm_view_s_codes_{seller_id}"
     await admin_view_specific_seller_codes(callback)
 
-@router.callback_query(F.data.in_(["adm_users_balances", "adm_sellers_list", "adm_pending_withdrawals", "adm_manage_balance", "adm_ledger_history", "adm_warning_menu", "adm_users_report", "adm_broadcast"]))
+@router.callback_query(F.data.in_(["adm_users_balances", "adm_sellers_list", "adm_pending_withdrawals", "adm_manage_balance", "adm_ledger_history", "adm_warning_menu", "adm_users_report", "adm_broadcast", "adm_ban_menu"]))
 async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     action = callback.data
@@ -2378,13 +2452,13 @@ async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext
     elif action == "adm_sellers_list":
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, full_name, seller_balance, seller_sales_count FROM users WHERE is_seller = 1")
+        cursor.execute("SELECT user_id, full_name, seller_balance, seller_pending_balance, seller_sales_count FROM users WHERE is_seller = 1")
         sellers = cursor.fetchall()
         conn.close()
         msg = f"⭐ Sellers List ({len(sellers)}):\n"
         builder = InlineKeyboardBuilder()
-        for s_id, name, bal, sales in sellers:
-            msg += f"\n👤 <b>{name}</b> (ID: <code>{s_id}</code>)\n💰 Profits: <b>{bal:.2f} EGP</b> | Sales: <b>{sales}</b>"
+        for s_id, name, bal, pending_bal, sales in sellers:
+            msg += f"\n👤 <b>{name}</b> (ID: <code>{s_id}</code>)\n💰 Available: <b>{bal:.2f} EGP</b> | Pending: <b>{pending_bal:.2f} EGP</b> | Sales: <b>{sales}</b>"
             builder.row(
                 types.InlineKeyboardButton(text=f"🗑️ Clear", callback_data=f"adm_zero_sbal_{s_id}"),
                 types.InlineKeyboardButton(text=f"➕ Add", callback_data=f"adm_add_sbal_{s_id}")
@@ -2408,6 +2482,10 @@ async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext
         await state.set_state(AdminState.waiting_for_balance_change)
         await callback.message.answer("⚙️ Send balance adjustment in format:\n`USER_ID AMOUNT`")
 
+    elif action == "adm_ban_menu":
+        await state.set_state(AdminState.waiting_for_ban_user_id)
+        await callback.message.answer("🔨 أرسل (آي دي - ID) المستخدم الذي تريد حظره أو إلغاء حظره في رسالة:")
+
     elif action == "adm_ledger_history":
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel_btn"))
         await callback.message.edit_text("📜 Ledger History", reply_markup=builder.as_markup())
@@ -2429,6 +2507,34 @@ async def admin_buttons_handler(callback: types.CallbackQuery, state: FSMContext
         await state.set_state(AdminState.waiting_for_broadcast)
         await callback.message.answer("📢 Send message to broadcast:")
     await safe_answer_callback(callback)
+
+@router.message(AdminState.waiting_for_ban_user_id)
+async def admin_ban_unban_process(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        target_id = int(message.text.strip())
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, full_name FROM users WHERE user_id = ?", (target_id,))
+        res = cursor.fetchone()
+        
+        if not res:
+            await message.reply("❌ هذا المستخدم غير مسجل في قاعدة البيانات.")
+            conn.close()
+            await state.clear()
+            return
+            
+        current_status, u_name = res
+        new_status = 'active' if current_status == 'blocked' else 'blocked'
+        cursor.execute("UPDATE users SET status = ? WHERE user_id = ?", (new_status, target_id))
+        conn.commit()
+        conn.close()
+        
+        status_text = "🟢 تم إلغاء الحظر وتفعيل المستخدم بنجاح" if new_status == 'active' else "🔴 تم حظر المستخدم بنجاح"
+        await message.reply(f"{status_text}\nالمستخدم: <b>{u_name}</b> (ID: <code>{target_id}</code>)")
+    except ValueError:
+        await message.reply("❌ يجيب إرسال رقم الـ ID صحيحاً بالأرقام فقط:")
+    await state.clear()
 
 @router.callback_query(F.data.startswith("adm_zero_sbal_"))
 async def adm_zero_seller_balance(callback: types.CallbackQuery):
@@ -2598,7 +2704,38 @@ async def general_menu_handler(callback: types.CallbackQuery, state: FSMContext)
             pass
     await safe_answer_callback(callback)
 
-# مهمة خلفية لزيادة أسعار الجنيه المصري (EGP) فقط تلقائياً (+3 ج) بعد الساعات المحددة، مع ترك الدولار (USDT) ثابتاً
+async def auto_release_escrow_task():
+    while True:
+        await asyncio.sleep(60) # يفحص كل دقيقة
+        try:
+            conn = sqlite3.connect(DB_NAME, timeout=30.0)
+            cursor = conn.cursor()
+            
+            # المعاملات اللي عدى عليها ساعة ومش ملغية ولم يتم الإفراج عنها بعد
+            one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("""
+                SELECT id, seller_id, net_profit FROM purchased_transactions 
+                WHERE seller_id > 0 AND escrow_released = 0 AND is_refunded = 0 AND purchase_time <= ?
+            """, (one_hour_ago,))
+            
+            expired_rows = cursor.fetchall()
+            for trans_id, seller_id, net_profit in expired_rows:
+                cursor.execute("UPDATE purchased_transactions SET escrow_released = 1 WHERE id = ?", (trans_id,))
+                cursor.execute("UPDATE users SET seller_pending_balance = seller_pending_balance - ?, seller_balance = seller_balance + ? WHERE user_id = ?", (net_profit, net_profit, seller_id))
+                
+                try:
+                    await bot.send_message(
+                        chat_id=seller_id,
+                        text=f"🟢 <b>Escrow Released Automatically!</b>\nTransaction #{trans_id} has passed 1 hour without dispute. Net profit of <b>{net_profit:.2f} EGP</b> has been moved to your available balance!"
+                    )
+                except:
+                    pass
+                    
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logging.error(f"Error in auto_release_escrow_task: {e}")
+
 async def scheduled_price_increase():
     while True:
         global price_increase_hours
@@ -2610,7 +2747,7 @@ async def scheduled_price_increase():
             rows = cursor.fetchall()
             
             for p_key, current_egp in rows:
-                new_egp = current_egp + 3.0  # زيادة 3 جنيه مصري ثابتة على كل منتج
+                new_egp = current_egp + 3.0
                 cursor.execute("UPDATE product_prices SET price_egp = ? WHERE product_key = ?", (new_egp, p_key))
                 
             conn.commit()
@@ -2625,7 +2762,8 @@ dp.include_router(router)
 async def main():
     await set_bot_commands()
     asyncio.create_task(scheduled_price_increase())
-    print("Super Bot Pro Edition with Unlimited Deposit & Refund Notifications is running...")
+    asyncio.create_task(auto_release_escrow_task())
+    print("Super Bot Pro Edition with Auto-Escrow System is running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
