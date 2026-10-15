@@ -619,7 +619,8 @@ async def cmd_deposit(message: types.Message, state: FSMContext):
     )
     msg = (
         "💳 <b>Deposit & Top-up Balance:</b>\n\n"
-        f"Minimum deposit limit: <b>{MIN_DEPOSIT_AMOUNT:.0f} EGP (~${MIN_DEPOSIT_AMOUNT/USDT_EGP_RATE:.1f} USDT)</b>\n\n"
+        f"Minimum deposit limit: <b>{MIN_DEPOSIT_AMOUNT:.0f} EGP (~${MIN_DEPOSIT_AMOUNT/USDT_EGP_RATE:.1f} USDT)</b>\n"
+        "🔸 You can deposit any amount starting from 200 EGP with no upper limit!\n\n"
         "Choose a preset amount or type the amount directly in chat:"
     )
     await message.answer(msg, reply_markup=builder.as_markup())
@@ -1476,7 +1477,8 @@ async def deposit_start(callback: types.CallbackQuery, state: FSMContext):
 
     msg = (
         "💳 <b>Deposit & Top-up Wallet:</b>\n\n"
-        f"🔸 Minimum Deposit Limit: <b>{MIN_DEPOSIT_AMOUNT:.0f} EGP (~${MIN_DEPOSIT_AMOUNT/USDT_EGP_RATE:.1f} USDT)</b>\n\n"
+        f"🔸 Minimum Deposit Limit: <b>{MIN_DEPOSIT_AMOUNT:.0f} EGP (~${MIN_DEPOSIT_AMOUNT/USDT_EGP_RATE:.1f} USDT)</b>\n"
+        "🔸 No upper limit! You can deposit any amount you want.\n\n"
         "Select a preset amount or **type the amount directly in chat**:"
     )
     try:
@@ -1836,7 +1838,6 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
     except:
         pass
 
-    # إرسال التقرير المفصل للأدمن لعمليات الشراء بالرصيد
     user_uname_str = f"@{user.username}" if user.username else "No Username"
     admin_sale_notice = (
         f"🛍️ <b>Instant Wallet Order Delivered!</b>\n\n"
@@ -2069,7 +2070,6 @@ async def deliver_order(order_id, game_code, message_obj):
         except Exception as e:
             logging.error(f"Failed to send to delivery proof channel: {e}")
 
-        # التقرير التفصيلي الكامل للبيع الشامل لجميع البيانات الموجه للأدمن
         admin_sale_notice = (
             f"🛍️ <b>Order #{order_id} Delivered Successfully!</b>\n\n"
             f"👤 <b>Buyer Details:</b>\n"
@@ -2199,16 +2199,29 @@ async def admin_approve_refund(callback: types.CallbackQuery):
         net_seller_deduct = price - (price * fee_rate)
         cursor.execute("UPDATE users SET seller_balance = seller_balance - ? WHERE user_id = ?", (net_seller_deduct, seller_id))
 
+        # إرسال إشعار للسيلر بأنه تم استرداد الأموال وخصم حق الكارت من أرباحه
+        try:
+            await bot.send_message(
+                chat_id=seller_id,
+                text=f"⚠️ <b>Notice: Refund Processed</b>\n\nProduct: <b>{product_name}</b>\nCode: <code>{game_code}</code>\n\nFunds have been refunded to the customer, and <b>{net_seller_deduct:.2f} EGP</b> has been deducted from your seller balance."
+            )
+        except:
+            pass
+
     conn.commit()
     conn.close()
 
+    # إرسال إشعار للزبون بأنه تم استرداد الأموال لمحفظته
     try:
-        await bot.send_message(chat_id=user_id, text=f"✅ <b>Refund approved by admin!</b>\nAdded <b>{price:.2f} EGP</b> back to your balance.")
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"✅ <b>Refund Approved!</b>\n\nYour refund request for <b>{product_name}</b> has been approved, and <b>{price:.2f} EGP</b> has been added back to your wallet balance."
+        )
     except:
         pass
 
     try:
-        await callback.message.edit_text(callback.message.text + "\n\n✅ Approved.")
+        await callback.message.edit_text(callback.message.text + "\n\n✅ Approved & Refunded.")
     except:
         pass
     await safe_answer_callback(callback, "✅ Refund approved successfully.")
@@ -2612,7 +2625,7 @@ dp.include_router(router)
 async def main():
     await set_bot_commands()
     asyncio.create_task(scheduled_price_increase())
-    print("Super Bot Pro Edition with Detailed Admin Reports is running...")
+    print("Super Bot Pro Edition with Unlimited Deposit & Refund Notifications is running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
