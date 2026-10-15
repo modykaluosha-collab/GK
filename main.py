@@ -2196,23 +2196,46 @@ async def process_user_rating(callback: types.CallbackQuery):
 async def admin_reject_order(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     order_id = int(callback.data.split("_")[1])
+    
+    await state.update_data(reject_order_id=order_id)
+    await state.set_state(AdminState.waiting_for_reject_reason)
+    
+    await callback.message.reply("✍️ أرسل سبب الرفض الآن في رسالة (أو اكتب السبب بالتفصيل وسيتم إرساله للعميل تلقائياً):")
+    await safe_answer_callback(callback)
+
+@router.message(AdminState.waiting_for_reject_reason)
+async def admin_send_reject_reason(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    order_id = data.get("reject_order_id")
+    
+    custom_reason = message.text.strip() if message.text else "تم تكرار العملية الإيصال مستخدم مسبقاً"
+    
     order_data = get_active_order(order_id)
     if order_data:
         target_user_id, product_title, _, _, _, item_price, payment_type, _ = order_data
+        
         if payment_type == "wallet":
             conn = sqlite3.connect(DB_NAME, timeout=30.0)
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (item_price, target_user_id))
             conn.commit()
             conn.close()
-            
+
         try:
-            await bot.send_message(chat_id=target_user_id, text=f"❌ Your order for ({product_title}) was rejected by admin." + (f" Refunded {item_price} EGP to balance." if payment_type=="wallet" else ""))
+            msg_to_user = (
+                f"❌ عذراً، تم رفض طلبك للباقة (<b>{product_title}</b>).\n"
+                f"📌 <b>السبب:</b> {custom_reason}\n\n"
+                f"💬 لمعرفة التفاصيل أو لأي استفسار، تواصل مع الدعم الفني: @{SUPPORT_USERNAME}"
+            )
+            
+            await bot.send_message(chat_id=target_user_id, text=msg_to_user)
             delete_active_order(order_id)
-            await callback.message.edit_text(callback.message.text + "\n\n❌ Rejected.")
-        except:
-            pass
-    await safe_answer_callback(callback, "Rejected.")
+            await message.reply("✅ تم رفض الطلب وإرسال السبب للعميل بنجاح.")
+        except Exception as e:
+            await message.reply(f"❌ خطأ أثناء إرسال الرسالة للعميل: {e}")
+            
+    await state.clear()
 
 @router.callback_query(F.data.startswith("req_refund_"))
 async def process_inline_refund_request(callback: types.CallbackQuery):
@@ -2706,12 +2729,11 @@ async def general_menu_handler(callback: types.CallbackQuery, state: FSMContext)
 
 async def auto_release_escrow_task():
     while True:
-        await asyncio.sleep(60) # يفحص كل دقيقة
+        await asyncio.sleep(60)
         try:
             conn = sqlite3.connect(DB_NAME, timeout=30.0)
             cursor = conn.cursor()
             
-            # المعاملات اللي عدى عليها ساعة ومش ملغية ولم يتم الإفراج عنها بعد
             one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("""
                 SELECT id, seller_id, net_profit FROM purchased_transactions 
@@ -2763,7 +2785,7 @@ async def main():
     await set_bot_commands()
     asyncio.create_task(scheduled_price_increase())
     asyncio.create_task(auto_release_escrow_task())
-    print("Super Bot Pro Edition with Auto-Escrow System is running...")
+    print("Super Bot Pro Edition running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
