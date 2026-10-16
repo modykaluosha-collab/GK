@@ -32,6 +32,7 @@ DEFAULT_PLATFORM_FEE = 0.02
 VIP_PLATFORM_FEE = 0.015
 
 LOG_CHANNEL_ID = -1004393845755      
+DELIVERY_PROOF_CHANNEL_ID = -1004490105003
 GUIDE_UPDATES_CHANNEL_ID = -1003836643803
 STOCK_ALERT_CHANNEL_ID = -1004486768828
 
@@ -471,7 +472,7 @@ class QuickSearchState(StatesGroup):
 class AdminSetPriceState(StatesGroup):
     waiting_for_price = State()
 
-# ==================== ID TICKET SYSTEM ====================
+# ==================== ID TICKET CHARGING SYSTEM ====================
 
 @router.callback_query(F.data == "start_id_ticket")
 async def start_id_ticket_process(callback: types.CallbackQuery, state: FSMContext):
@@ -489,6 +490,10 @@ async def start_id_ticket_process(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(IDTicketState.waiting_for_player_id)
 async def process_ticket_player_id(message: types.Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     player_id = message.text.strip() if message.text else ""
     if not player_id:
         await message.answer("❌ يرجى إرسال الـ ID الصحيح فقط:")
@@ -506,6 +511,10 @@ async def process_ticket_player_id(message: types.Message, state: FSMContext):
 
 @router.message(IDTicketState.waiting_for_quantity)
 async def process_ticket_quantity(message: types.Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     quantity = message.text.strip() if message.text else ""
     if not quantity:
         await message.answer("❌ يرجى كتابة الكمية المطلوبة فقط:")
@@ -529,8 +538,7 @@ async def process_ticket_quantity(message: types.Message, state: FSMContext):
     builder.row(types.InlineKeyboardButton(text="✅ تم الشحن وإغلاق التيكيت", callback_data=f"close_ticket_{user.id}"))
 
     try:
-        sent_msg = await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
-        await state.update_data(admin_notice_id=sent_msg.message_id)
+        await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
         await message.answer(
             "✅ <b>تم فتح التيكيت وإرساله للدعم بنجاح!</b>\n\n"
             "سيصلك إشعار بالسعر وطريقة الدفع فوراً."
@@ -573,7 +581,7 @@ async def admin_send_ticket_price_options(message: types.Message, state: FSMCont
         await message.answer("❌ يرجى كتابة السعر بالأرقام فقط:")
 
 @router.callback_query(F.data.startswith("send_pay_"))
-async def send_payment_details_to_user(callback: types.CallbackQuery, state: FSMContext):
+async def send_payment_details_to_user(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
     parts = callback.data.split("_")
     p_type = parts[2]
@@ -585,20 +593,23 @@ async def send_payment_details_to_user(callback: types.CallbackQuery, state: FSM
             f"💳 <b>تسعيرة طلب الشحن الخاص بك:</b>\n\n"
             f"💰 المبلغ المطلوب: <b>{amount:.2f} EGP</b>\n"
             f"📱 رقم فودافون كاش للتحويل: <code>{VODAFONE_NUMBER}</code>\n\n"
-            f"📸 بعد التحويل، قم بإرسال صورة الإيصال هنا مباشرة لتأكيد الطلب."
+            f"📸 بعد التحويل، قم بإرسال صورة الإيصال هنا لتأكيد الطلب."
         )
     else:
         pay_msg = (
             f"💳 <b>تسعيرة طلب الشحن الخاص بك:</b>\n\n"
             f"💰 المبلغ المطلوب: <b>${amount:.2f} USDT</b>\n"
             f"🌐 عنوان المحفظة TRC20: <code>{USDT_TRC20_ADDRESS}</code>\n\n"
-            f"📸 بعد التحويل، قم بإرسال صورة الإيصال هنا مباشرة لتأكيد الطلب."
+            f"📸 بعد التحويل، قم بإرسال صورة الإيصال هنا لتأكيد الطلب."
         )
 
     try:
         await bot.send_message(chat_id=target_user_id, text=pay_msg)
-        await state.set_state(IDTicketState.waiting_for_receipt)
-        await state.update_data(ticket_user_id=target_user_id, ticket_amount=amount)
+        
+        # تفعيل حالة استقبال الإيصال للعميل
+        user_fsm = FSMContext(storage=dp.storage, key=types.StorageKey(bot_id=bot.id, chat_id=target_user_id, user_id=target_user_id))
+        await user_fsm.set_state(IDTicketState.waiting_for_receipt)
+
         await callback.message.edit_text(callback.message.text + "\n\n✅ تم إرسال بيانات الدفع والسعر للعميل بنجاح.")
     except Exception as e:
         await callback.message.reply(f"❌ تعذر الإرسال للعميل: {e}")
@@ -610,10 +621,10 @@ async def process_ticket_receipt_photo(message: types.Message, state: FSMContext
     photo_id = message.photo[-1].file_id
     
     admin_notice = (
-        f"📸 <b>إيصال دفع تيكيت جديد من العميل!</b>\n\n"
+        f"📸 <b>إيصال دفع تيكيت جديد وصل الآن من العميل!</b>\n\n"
         f"👤 <b>العميل:</b> {user.full_name} (@{user.username if user.username else 'لا يوجد'})\n"
         f"🆔 <b>آي دي العميل:</b> <code>{user.id}</code>\n\n"
-        f"يرجى مراجعة الإيصال وتأكيد الشحن للعميل."
+        f"يرجى مراجعة الإيصال وتأكيد الشحن فوراً."
     )
 
     builder = InlineKeyboardBuilder()
@@ -621,7 +632,7 @@ async def process_ticket_receipt_photo(message: types.Message, state: FSMContext
 
     try:
         await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_notice, reply_markup=builder.as_markup())
-        await message.answer("✅ <b>تم إرسال الإيصال للآدمن بنجاح!</b>\nسيتم مراجعة الدفع وشحن حسابك فوراً.")
+        await message.answer("✅ <b>تم إرسال صورة الإيصال إلى الإدارة بنجاح!</b>\nجارٍ مراجعة التحويل وتأكيد الشحن بحسابك.")
     except Exception as e:
         await message.answer(f"❌ حدث خطأ أثناء إرسال الإيصال: {e}")
     await state.clear()
@@ -634,12 +645,14 @@ async def close_ticket_by_admin(callback: types.CallbackQuery):
     try:
         await bot.send_message(
             chat_id=target_user_id,
-            text="✅ <b>تم شحن طلبك بنجاح وإغلاق التيكيت! نتمنى لك تجربة ممتعة 🎮</b>"
+            text="✅ <b>تم شحن طلبك بنجاح عن طريق الـ ID وإغلاق التيكيت! نتمنى لك تجربة ممتعة 🎮</b>"
         )
         await callback.message.edit_text(callback.message.text + "\n\n✅ <b>تم إغلاق التيكيت وتأكيد الشحن للعميل.</b>")
     except:
         pass
     await safe_answer_callback(callback, "تم الإغلاق بنجاح.")
+
+# ==================== KEYBOARDS & NAVIGATION ====================
 
 def get_last_purchased_product(user_id):
     try:
@@ -713,7 +726,7 @@ async def spin_wheel_daily_handler(callback: types.CallbackQuery):
             minutes, _ = divmod(remainder, 60)
             await safe_answer_callback(
                 callback, 
-                f"⏳ لقد حصلت على هديتك اليومية بالفعل!\nعد مجدداً بعد {hours} ساعة و {minutes} دقيقة.", 
+                f"⏳ لقدحصلت على هديتك اليومية بالفعل!\nعد مجدداً بعد {hours} ساعة و {minutes} دقيقة.", 
                 show_alert=True
             )
             conn.close()
@@ -744,7 +757,7 @@ async def spin_wheel_daily_handler(callback: types.CallbackQuery):
         pass
     await safe_answer_callback(callback)
 
-# ==================== SELECTION MENU ====================
+# ==================== CATEGORIES & PURCHASES ====================
 
 @router.callback_query(F.data.in_(["cat_freefire", "cat_pubg"]))
 async def ask_currency_selection(callback: types.CallbackQuery):
@@ -804,8 +817,6 @@ async def show_category_products_filtered(callback: types.CallbackQuery):
         pass
     await safe_answer_callback(callback)
 
-# ==================== OTHER PANELS ====================
-
 def get_seller_keyboard(user_id):
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
@@ -835,15 +846,20 @@ def get_admin_keyboard():
     builder.row(types.InlineKeyboardButton(text="📦 Add Stock", callback_data="adm_addstock"))
     builder.row(types.InlineKeyboardButton(text="📊 Stock Quick Overview", callback_data="adm_stock_overview"))
     builder.row(types.InlineKeyboardButton(text="📋 View All Active Stock Codes", callback_data="adm_view_all_codes"))
-    builder.row(types.InlineKeyboardButton(text="✏️ Edit Product Prices", callback_data="adm_edit_prices_menu"))
+    builder.row(types.InlineKeyboardButton(text="✏️ Edit Product Prices (EGP / USDT)", callback_data="adm_edit_prices_menu"))
+    builder.row(types.InlineKeyboardButton(text="🚀 جدولة تعديل الأسعار شامل + إذاعة", callback_data="adm_full_price_schedule_start"))
     builder.row(types.InlineKeyboardButton(text="📈 Comprehensive Sales Analytics", callback_data="adm_sales_analytics"))
     builder.row(types.InlineKeyboardButton(text="💎 Net Profit Report", callback_data="adm_net_profits"))
     builder.row(types.InlineKeyboardButton(text="👥 Users Balances", callback_data="adm_users_balances"))
     builder.row(types.InlineKeyboardButton(text="⭐ Sellers List & Control", callback_data="adm_sellers_list"))
+    builder.row(types.InlineKeyboardButton(text="🔑 Sellers Stock & Sales", callback_data="adm_sellers_stock_list"))
     builder.row(types.InlineKeyboardButton(text="⏳ Pending Orders", callback_data="adm_pending_orders"))
     builder.row(types.InlineKeyboardButton(text="💸 Pending Withdrawals", callback_data="adm_pending_withdrawals"))
     builder.row(types.InlineKeyboardButton(text="⚙️ Add/Deduct Balance", callback_data="adm_manage_balance"))
     builder.row(types.InlineKeyboardButton(text="🔨 Ban / Unban Users Menu", callback_data="adm_ban_menu"))
+    builder.row(types.InlineKeyboardButton(text="📜 Admin Ledger History", callback_data="adm_ledger_history"))
+    builder.row(types.InlineKeyboardButton(text="⚠️ Send Warning", callback_data="adm_warning_menu"))
+    builder.row(types.InlineKeyboardButton(text="📊 Bot Users Report", callback_data="adm_users_report"))
     builder.row(types.InlineKeyboardButton(text="📢 Broadcast", callback_data="adm_broadcast"))
     builder.row(types.InlineKeyboardButton(text=maint_text, callback_data="adm_toggle_maintenance"))
     builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
@@ -862,7 +878,8 @@ async def cmd_seller(message: types.Message):
     await message.answer(msg, reply_markup=get_seller_keyboard(user_id))
 
 @router.message(CommandStart())
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     user_name = message.from_user.full_name
     user_id = message.from_user.id
     user_username = f"@{message.from_user.username}" if message.from_user.username else "N/A"
@@ -914,6 +931,26 @@ async def cmd_profile(message: types.Message):
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
     await message.answer(txt, reply_markup=builder.as_markup())
 
+@router.message(Command("deposit"))
+async def cmd_deposit(message: types.Message, state: FSMContext):
+    await state.set_state(DepositState.waiting_for_deposit_amount)
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="💵 200 EGP (~$4)", callback_data="dep_amt_200"),
+        types.InlineKeyboardButton(text="💵 500 EGP (~$10)", callback_data="dep_amt_500")
+    )
+    builder.row(
+        types.InlineKeyboardButton(text="💵 1000 EGP (~$20)", callback_data="dep_amt_1000"),
+        types.InlineKeyboardButton(text="💵 2000 EGP (~$40)", callback_data="dep_amt_2000")
+    )
+    msg = (
+        "💳 <b>Deposit & Top-up Balance:</b>\n\n"
+        f"Minimum deposit limit: <b>{MIN_DEPOSIT_AMOUNT:.0f} EGP (~${MIN_DEPOSIT_AMOUNT/USDT_EGP_RATE:.1f} USDT)</b>\n"
+        "🔸 No upper limit! You can deposit any amount you want.\n\n"
+        "Choose a preset amount or type the amount directly in chat:"
+    )
+    await message.answer(msg, reply_markup=builder.as_markup())
+
 @router.callback_query(F.data == "admin_panel_btn")
 async def open_admin_panel(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -928,276 +965,157 @@ async def open_admin_panel(callback: types.CallbackQuery):
         pass
     await safe_answer_callback(callback)
 
-# ==================== SELLER & STOCK MANAGEMENT ====================
+# ==================== DEPOSIT SYSTEM ====================
 
-@router.callback_query(F.data == "seller_panel_btn")
-async def open_seller_panel(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if not is_user_seller(user_id):
-        await safe_answer_callback(callback, "⚠️ Unauthorized!", show_alert=True)
-        return
-
-    seller_bal, pending_bal, sales_cnt, _, _, _ = get_seller_data(user_id)
-    msg = f"🛠️ Seller Control Panel:\nTotal Sales: {sales_cnt}\nAvailable Balance: {seller_bal:.2f} EGP\n⏳ Pending Escrow Balance: {pending_bal:.2f} EGP"
-    try:
-        await callback.message.edit_text(msg, reply_markup=get_seller_keyboard(user_id))
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data == "seller_add_stock")
-async def seller_add_stock_start(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if not is_user_seller(user_id): return
-
+@router.callback_query(F.data == "deposit_balance")
+async def deposit_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(DepositState.waiting_for_deposit_amount)
+    
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔥 Free Fire Stock", callback_data="addstock_cat_ff"))
-    builder.row(types.InlineKeyboardButton(text="🎮 PUBG Mobile Stock", callback_data="addstock_cat_pubg"))
-    builder.row(types.InlineKeyboardButton(text="🛠️ Seller Panel", callback_data="seller_panel_btn"))
-
-    try:
-        await callback.message.edit_text("📦 Choose game category to add stock:", reply_markup=builder.as_markup())
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data == "addstock_cat_ff")
-async def addstock_freefire_menu(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if not is_user_seller(user_id): return
-
-    builder = InlineKeyboardBuilder()
-    ff_items = ["ff110", "ff231", "ff583", "ff1188", "ff2420"]
-    for p_key in ff_items:
-        title = PRODUCTS_TITLES.get(p_key, p_key)
-        price_egp, _ = get_product_prices(p_key)
-        builder.row(types.InlineKeyboardButton(text=f"🔥 {title} ({price_egp} EGP)", callback_data=f"select_add_p_{p_key}"))
-    builder.row(types.InlineKeyboardButton(text="⬅️ Back", callback_data="seller_add_stock"))
-
-    try:
-        await callback.message.edit_text("🔥 Select Free Fire package:", reply_markup=builder.as_markup())
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data == "addstock_cat_pubg")
-async def addstock_pubg_menu(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if not is_user_seller(user_id): return
-
-    builder = InlineKeyboardBuilder()
-    pubg_items = ["pubg60", "pubg325", "pubg660", "pubg1800", "pubg3850", "pubg8100"]
-    for p_key in pubg_items:
-        title = PRODUCTS_TITLES.get(p_key, p_key)
-        price_egp, _ = get_product_prices(p_key)
-        builder.row(types.InlineKeyboardButton(text=f"🎮 {title} ({price_egp} EGP)", callback_data=f"select_add_p_{p_key}"))
-    builder.row(types.InlineKeyboardButton(text="⬅️ Back", callback_data="seller_add_stock"))
-
-    try:
-        await callback.message.edit_text("🎮 Select PUBG Mobile package:", reply_markup=builder.as_markup())
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.callback_query(F.data.startswith("select_add_p_"))
-async def select_package_for_stock(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    if not is_user_seller(user_id): return
-
-    p_key = callback.data.split("_")[3]
-    prod_title = PRODUCTS_TITLES.get(p_key, p_key)
-
-    await state.update_data(stock_product_key=p_key, stock_is_admin=0)
-    await state.set_state(SellerState.waiting_for_seller_stock)
-
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="seller_panel_btn"))
+    builder.row(
+        types.InlineKeyboardButton(text="💵 200 EGP (~$4)", callback_data="dep_amt_200"),
+        types.InlineKeyboardButton(text="💵 500 EGP (~$10)", callback_data="dep_amt_500")
+    )
+    builder.row(
+        types.InlineKeyboardButton(text="💵 1000 EGP (~$20)", callback_data="dep_amt_1000"),
+        types.InlineKeyboardButton(text="💵 2000 EGP (~$40)", callback_data="dep_amt_2000")
+    )
+    builder.row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
 
     msg = (
-        f"📦 Selected Package: <b>{prod_title}</b>\n\n"
-        "📲 Send codes now (each code on a separate line).\n"
-        "✨ Codes will be added to inventory instantly."
+        "💳 <b>Deposit & Top-up Wallet:</b>\n\n"
+        f"🔸 Minimum Deposit Limit: <b>{MIN_DEPOSIT_AMOUNT:.0f} EGP (~${MIN_DEPOSIT_AMOUNT/USDT_EGP_RATE:.1f} USDT)</b>\n"
+        "🔸 No upper limit! You can deposit any amount you want.\n\n"
+        "Select a preset amount or **type the amount directly in chat**:"
     )
     try:
         await callback.message.edit_text(msg, reply_markup=builder.as_markup())
     except:
-        pass
+        await callback.message.answer(msg, reply_markup=builder.as_markup())
     await safe_answer_callback(callback)
 
-@router.message(SellerState.waiting_for_seller_stock)
-async def process_bulk_stock_items(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    p_key = data.get("stock_product_key")
-    is_admin = data.get("stock_is_admin", 0)
-    user_id = message.from_user.id
+@router.callback_query(F.data.startswith("dep_amt_"))
+async def process_preset_deposit_amount(callback: types.CallbackQuery, state: FSMContext):
+    amount = float(callback.data.split("_")[2])
+    usdt_val = amount / USDT_EGP_RATE
+    await state.update_data(deposit_amount=amount)
+    await state.set_state(DepositState.waiting_for_deposit_receipt)
+    
+    msg = (
+        f"✅ Selected Deposit Amount: <b>{amount:.0f} EGP (~${usdt_val:.2f} USDT)</b>\n\n"
+        f"📲 <b>Payment Methods Available:</b>\n\n"
+        f"🇪🇬 <b>Vodafone Cash (Egypt):</b>\n"
+        f"• Number: <code>{VODAFONE_NUMBER}</code> (Tap to copy)\n\n"
+        f"🌐 <b>Binance USDT (TRC20 Network):</b>\n"
+        f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (Tap to copy)\n\n"
+        "📸 <b>Required Verification Steps:</b>\n"
+        "1. Send transfer receipt screenshot photo.\n"
+        "2. Include <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash)."
+    )
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
+    try:
+        await callback.message.edit_text(msg, reply_markup=builder.as_markup())
+    except:
+        await callback.message.answer(msg, reply_markup=builder.as_markup())
+    await safe_answer_callback(callback)
 
-    if not message.text:
-        await message.answer("❌ يرجى إرسال نص يحتوي على الأكواد.")
-        return
-
-    if not p_key:
-        await message.answer("❌ خطأ: لم يتم التعرف على الباقة. يرجى البدء من جديد.")
-        await state.clear()
-        return
-
-    lines = message.text.strip().split("\n")
-    success_count = 0
-    duplicate_count = 0
-
-    price_egp, _ = get_product_prices(p_key)
-
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
-    cursor = conn.cursor()
-
-    for line in lines:
-        code = line.strip()
-        if not code:
-            continue
-
-        try:
-            cursor.execute("SELECT id FROM stock WHERE code = ?", (code,))
-            if cursor.fetchone():
-                duplicate_count += 1
-                continue
+@router.message(DepositState.waiting_for_deposit_amount)
+async def deposit_check_amount(message: types.Message, state: FSMContext):
+    try:
+        if not message.text:
+            await message.answer("❌ Please enter a valid numerical amount.")
+            return
+        amount = float(message.text.strip())
+        if amount < MIN_DEPOSIT_AMOUNT:
+            await message.answer(f"⚠️ Minimum deposit limit is {MIN_DEPOSIT_AMOUNT:.0f} EGP:")
+            return
             
-            s_id = 0 if is_admin == 1 else user_id
-            cursor.execute("INSERT INTO stock (product_key, code, seller_id, price, status) VALUES (?, ?, ?, ?, 'active')", (p_key, code, s_id, price_egp))
-            success_count += 1
-        except sqlite3.IntegrityError:
-            duplicate_count += 1
-        except:
-            pass
-
-    conn.commit()
-    conn.close()
-
-    prod_name = PRODUCTS_TITLES.get(p_key, p_key)
-    reply_msg = f"✅ <b>نتائج إضافة الستوك ({prod_name}):</b>\n\n"
-    reply_msg += f"• تم الإضافة بنجاح: <b>{success_count}</b>\n"
-    reply_msg += f"• أكواد مكررة تم تجاهلها: <b>{duplicate_count}</b>"
-
-    await message.answer(reply_msg)
-    
-    if success_count > 0:
-        asyncio.create_task(notify_subscribed_users_new_stock(p_key, success_count))
-                
-    await state.clear()
-
-# ==================== ORDER FLOW & PURCHASES ====================
-
-@router.callback_query(F.data.startswith("buy_"))
-async def process_buy_click(callback: types.CallbackQuery, state: FSMContext):
-    parts = callback.data.split("_")
-    p_key = parts[1]
-    curr = parts[2] if len(parts) > 2 else "egp"
-    
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM stock WHERE product_key = ? AND status = 'active'", (p_key,))
-    stock_count = cursor.fetchone()[0]
-    conn.close()
-
-    if stock_count <= 0:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="🔔 Notify Me When Available", callback_data=f"sub_stock_{p_key}"))
-        builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
+        usdt_val = amount / USDT_EGP_RATE
+        await state.update_data(deposit_amount=amount)
+        await state.set_state(DepositState.waiting_for_deposit_receipt)
         
-        try:
-            await callback.message.edit_text(
-                "⚠️ <b>Out of Stock!</b>\n\nSorry, this item is currently unavailable. Click below to get notified when restocked:",
-                reply_markup=builder.as_markup()
-            )
-        except:
-            pass
-        await safe_answer_callback(callback)
-        return
-
-    title = PRODUCTS_TITLES.get(p_key, "Item")
-    egp_price, usdt_price = get_product_prices(p_key)
-    
-    await state.update_data(product_title=title, product_key=p_key, product_price_egp=egp_price, product_price_usdt=usdt_price, selected_currency=curr)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="💳 Pay from Wallet Balance", callback_data="pay_method_wallet"))
-    builder.row(types.InlineKeyboardButton(text="📱 Direct Payment / External", callback_data="pay_method_external"))
-    builder.row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
-    
-    display_price_str = f"{egp_price:.0f} EGP" if curr == "egp" else f"${usdt_price:.2f} USDT"
-    try:
-        await callback.message.edit_text(
-            f"🛒 Selected Product: <b>{title}</b>\n💰 Price: <b>{display_price_str}</b>\n\nChoose payment method:",
-            reply_markup=builder.as_markup()
+        msg = (
+            f"✅ Selected Deposit Amount: <b>{amount:.0f} EGP (~${usdt_val:.2f} USDT)</b>\n\n"
+            f"📲 <b>Payment Methods Available:</b>\n\n"
+            f"🇪🇬 <b>Vodafone Cash (Egypt):</b>\n"
+            f"• Number: <code>{VODAFONE_NUMBER}</code> (Tap to copy)\n\n"
+            f"🌐 <b>Binance USDT (TRC20 Network):</b>\n"
+            f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (Tap to copy)\n\n"
+            "📸 <b>Required Verification Steps:</b>\n"
+            "Send transfer receipt screenshot photo now."
         )
-    except:
-        pass
-    await safe_answer_callback(callback)
+        await message.answer(msg)
+    except ValueError:
+        await message.answer("❌ Invalid amount format. Please send digits only.")
 
-@router.callback_query(F.data == "pay_method_wallet")
-async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMContext):
-    user = callback.from_user
-    user_bal = get_user_balance(user.id)
+@router.message(DepositState.waiting_for_deposit_receipt, F.photo)
+async def deposit_receive_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    prod_title = data.get("product_title", "Product")
-    prod_key = data.get("product_key", "item")
-    price = data.get("product_price_egp", 0.0)
-
-    if user_bal < price:
-        await safe_answer_callback(callback, f"❌ Insufficient balance ({user_bal:.2f} EGP). Please deposit first.", show_alert=True)
-        return
+    dep_amount = data.get("deposit_amount", 0.0)
+    photo_id = message.photo[-1].file_id
+    
+    details = message.caption.strip() if message.caption else "No details attached"
+    user = message.from_user
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (price, user.id))
+    cursor.execute(
+        "INSERT INTO active_deposits (user_id, amount, details, receipt_file_id, status) VALUES (?, ?, ?, ?, 'pending')",
+        (user.id, dep_amount, details, photo_id)
+    )
+    deposit_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
-    auto_code, auto_seller_id, _ = get_stock_code(prod_key)
-    if not auto_code:
-        conn = sqlite3.connect(DB_NAME, timeout=30.0)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (price, user.id))
-        conn.commit()
-        conn.close()
-        await safe_answer_callback(callback, "⚠️ Sorry, stock just ran out! Your balance has been refunded.", show_alert=True)
-        return
-
-    net_profit = 0.0
-    trans_id = save_user_purchased_code(user.id, prod_title, auto_code, auto_seller_id, price, net_profit)
-
+    await message.answer("✅ <b>Deposit request submitted!</b>\nAdmin is reviewing your transaction and balance will be updated shortly.")
+    
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="✅ تأكيد شحن الكود بنجاح", callback_data=f"confirm_deliv_{trans_id}"))
+    builder.row(
+        types.InlineKeyboardButton(text="✅ Approve Deposit", callback_data=f"accept_dep_{deposit_id}_{user.id}_{int(dep_amount)}"),
+        types.InlineKeyboardButton(text="❌ Reject Deposit", callback_data=f"reject_dep_{deposit_id}_{user.id}")
+    )
 
+    admin_notice = (
+        f"💳 <b>New Deposit Request #{deposit_id}</b>\n\n"
+        f"💰 Amount: <b>{dep_amount:.2f} EGP (~${dep_amount/USDT_EGP_RATE:.2f} USDT)</b>\n"
+        f"👤 User: {user.full_name} (@{user.username if user.username else 'NoUsername'} | ID: <code>{user.id}</code>)\n"
+        f"📝 Sender Info / TXID: <code>{details}</code>"
+    )
+    
     try:
-        await callback.message.edit_text(
-            f"✅ <b>Purchase successful!</b>\n\n"
-            f"📦 Product: <b>{prod_title}</b>\n"
-            f"🔑 Code: <code>{auto_code}</code>\n\n"
-            f"👇 اضغط على الزر أدناه لتأكيد شحن الكود:",
-            reply_markup=builder.as_markup()
-        )
+        await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_notice, reply_markup=builder.as_markup())
     except:
-        pass
-
+        await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
+        
     await state.clear()
-    await safe_answer_callback(callback)
 
-@router.callback_query(F.data.startswith("confirm_deliv_"))
-async def process_confirm_delivery(callback: types.CallbackQuery):
-    trans_id = int(callback.data.split("_")[2])
+@router.callback_query(F.data.startswith("accept_dep_"))
+async def admin_accept_deposit(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    parts = callback.data.split("_")
+    deposit_id = int(parts[2])
+    target_user_id = int(parts[3])
+    amount = float(parts[4])
+
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute("UPDATE purchased_transactions SET confirmed_delivery = 1 WHERE id = ?", (trans_id,))
+    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_user_id))
+    cursor.execute("DELETE FROM active_deposits WHERE deposit_id = ?", (deposit_id,))
     conn.commit()
     conn.close()
 
     try:
-        await callback.message.edit_text(
-            callback.message.text + "\n\n✅ <b>تم تأكيد شحن الكود بنجاح! شكراً لتعاملكم معنا 🎮</b>"
-        )
+        await bot.send_message(chat_id=target_user_id, text=f"✅ Deposit accepted by admin.\nAdded <b>{amount:.2f} EGP</b> to your balance.")
     except:
         pass
-    await safe_answer_callback(callback, "✅ شكراً لك! تم تأكيد الشحن.", show_alert=True)
 
-# ==================== GENERAL MENU HANDLERS ====================
+    try:
+        await callback.message.edit_caption(caption=callback.message.caption + f"\n\n✅ Accepted and credited.", reply_markup=None)
+    except:
+        pass
+    await safe_answer_callback(callback, "✅ Deposit accepted.")
+
+# ==================== GENERAL HANDLERS ====================
 
 @router.callback_query(F.data.in_(["faq_menu", "about_store", "my_profile", "main_menu"]))
 async def general_menu_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -1221,7 +1139,7 @@ async def general_menu_handler(callback: types.CallbackQuery, state: FSMContext)
     elif callback.data == "about_store":
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
         try:
-            await callback.message.edit_text(f"ℹ️ <b>Gk Games Store</b>\n\nYour trusted store for gaming top-ups and digital products.", reply_markup=builder.as_markup())
+            await callback.message.edit_text("ℹ️ <b>Gk Games Store</b>\n\nYour trusted store for gaming top-ups and digital products.", reply_markup=builder.as_markup())
         except:
             pass
     await safe_answer_callback(callback)
