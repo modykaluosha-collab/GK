@@ -69,7 +69,7 @@ router = Router()
 
 DB_NAME = "store_v25_escrow.db"
 user_last_action = {}
-SPAM_DELAY = 1.0  
+SPAM_DELAY = 0.5  
 maintenance_mode = False  
 
 def init_db():
@@ -658,42 +658,17 @@ async def close_ticket_by_admin(callback: types.CallbackQuery):
 
 # ==================== SELECTION MENU WITH LIVE STOCK ====================
 
-@router.callback_query(F.data.startswith("cur_"))
-async def show_category_products_filtered(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    curr = parts[1]      # egp or usdt
-    cat_type = parts[2]  # freefire or pubg
-    
+@router.callback_query(F.data.in_(["cat_freefire", "cat_pubg"]))
+async def ask_currency_selection(callback: types.CallbackQuery):
+    cat_type = callback.data.replace("cat_", "")
     builder = InlineKeyboardBuilder()
-    
-    if cat_type == "freefire":
-        items = ["ff110", "ff231", "ff583", "ff1188", "ff2420"]
-        header_title = "🔥 Free Fire ID (Available)"
-    else:
-        items = ["pubg60", "pubg325", "pubg660", "pubg1800", "pubg3850", "pubg8100"]
-        header_title = "🎮 PUBG Mobile ID (Available)"
-
-    for p_key in items:
-        title = PRODUCTS_TITLES.get(p_key, p_key)
-        egp_p, usdt_p = get_product_prices(p_key)
-        stock_qty = get_stock_count(p_key)
-        
-        # عرض كمية المخزون المتاح بين قوسين
-        stock_str = f"({stock_qty})" if stock_qty > 0 else "(نفذت ❌)"
-        
-        if curr == "egp":
-            btn_text = f"{title} - {egp_p:.0f} EGP {stock_str}"
-        else:
-            btn_text = f"{title} - ${usdt_p:.2f} USDT {stock_str}"
-            
-        builder.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"buy_{p_key}_{curr}"))
-
-    builder.row(types.InlineKeyboardButton(text="⬅️ تغيير العملة", callback_data=f"cat_{cat_type}"))
-    builder.row(types.InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="main_menu"))
+    builder.row(types.InlineKeyboardButton(text="🇪🇬 EGP (Egyptian Pound)", callback_data=f"cur_egp_{cat_type}"))
+    builder.row(types.InlineKeyboardButton(text="🌐 USDT (US Dollar)", callback_data=f"cur_usdt_{cat_type}"))
+    builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
     
     try:
         await callback.message.edit_text(
-            f"📦 <b>{header_title}:</b>\nاختر الباقة المناسبة للشحن الفوري:", 
+            "💱 <b>Choose Display Currency:</b>\nPlease select your preferred currency to view prices:", 
             reply_markup=builder.as_markup()
         )
     except:
@@ -729,8 +704,8 @@ async def show_category_products_filtered(callback: types.CallbackQuery):
             
         builder.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"buy_{p_key}_{curr}"))
 
-    builder.row(types.InlineKeyboardButton(text="⬅️ Change Currency", callback_data=f"cat_{cat_type}"))
-    builder.row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
+    builder.row(types.InlineKeyboardButton(text="⬅️ تغيير العملة", callback_data=f"cat_{cat_type}"))
+    builder.row(types.InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="main_menu"))
     
     try:
         await callback.message.edit_text(
@@ -2185,16 +2160,11 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
         except:
             pass
 
-    trans_id = 0
-    try:
-        trans_id = save_user_purchased_code(user.id, prod_title, auto_code, auto_seller_id, price, net_profit)
-    except:
-        pass
+    trans_id = save_user_purchased_code(user.id, prod_title, auto_code, auto_seller_id, price, net_profit)
 
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="✅ تأكيد شحن الكود بنجاح", callback_data=f"confirm_deliv_{trans_id}"))
-    if trans_id > 0:
-        builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
+    builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
 
     try:
         await callback.message.edit_text(
@@ -2449,18 +2419,13 @@ async def deliver_order(order_id, game_code, message_obj):
         except:
             pass
 
-    trans_id = 0
-    try:
-        trans_id = save_user_purchased_code(target_user_id, product_name, game_code, seller_id, item_price, net_profit)
-    except:
-        pass
+    trans_id = save_user_purchased_code(target_user_id, product_name, game_code, seller_id, item_price, net_profit)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="✅ تأكيد شحن الكود بنجاح", callback_data=f"confirm_deliv_{trans_id}"))
+    builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
 
     try:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="✅ تأكيد شحن الكود بنجاح", callback_data=f"confirm_deliv_{trans_id}"))
-        if trans_id > 0:
-            builder.row(types.InlineKeyboardButton(text="🔄 Request Refund", callback_data=f"req_refund_{trans_id}"))
-        
         await bot.send_message(
             chat_id=target_user_id, 
             text=(
@@ -3053,6 +3018,14 @@ async def general_menu_handler(callback: types.CallbackQuery, state: FSMContext)
         builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
         try:
             await callback.message.edit_text(f"👤 Profile:\nID: <code>{user_id}</code>\nBalance: <b>{bal:.2f} EGP</b>", reply_markup=builder.as_markup())
+        except:
+            pass
+    elif callback.data == "faq_menu":
+        await show_faq_msg(callback.message)
+    elif callback.data == "about_store":
+        builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu"))
+        try:
+            await callback.message.edit_text("ℹ️ <b>Gk Games Store</b>\n\nYour trusted store for gaming top-ups and digital products.", reply_markup=builder.as_markup())
         except:
             pass
     await safe_answer_callback(callback)
