@@ -467,6 +467,10 @@ class QuickSearchState(StatesGroup):
 class AdminSetPriceState(StatesGroup):
     waiting_for_price = State()
 
+class IDTicketState(StatesGroup):
+    waiting_for_player_id = State()
+    waiting_for_quantity = State()
+
 @router.callback_query(F.data == "start_id_ticket")
 async def start_id_ticket_process(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(IDTicketState.waiting_for_player_id)
@@ -602,7 +606,7 @@ def get_main_keyboard(user_id):
         types.InlineKeyboardButton(text="📖 Guides & Updates", url=GUIDE_UPDATES_LINK),
         types.InlineKeyboardButton(text="📦 Live Stock Channel", url=STOCK_ALERT_LINK)
     )
-    builder.row(types.InlineKeyboardButton(text="✅ Live Deliveries Channel", url=DELIVERY_PROOF_LINK))
+    # تم إزالة زر Live Deliveries Channel من هنا بناءً على طلبك
     
     builder.row(
         types.InlineKeyboardButton(text="👤 My Profile", callback_data="my_profile"),
@@ -672,74 +676,6 @@ async def spin_wheel_daily_handler(callback: types.CallbackQuery):
     except:
         pass
     await safe_answer_callback(callback)
-
-# ==================== ID TICKET CHARGING SYSTEM ====================
-
-@router.callback_query(F.data == "start_id_ticket")
-async def start_id_ticket_process(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(IDTicketState.waiting_for_player_id)
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ إلغاء", callback_data="main_menu"))
-    
-    try:
-        await callback.message.edit_text(
-            "🎫 <b>فتح تيكيت شحن عن طريق الـ ID Direct:</b>\n\n"
-            "الرجاء كتابة **الـ Player ID (الأيدي)** الخاص بك فقط واضغط إرسال:",
-            reply_markup=builder.as_markup()
-        )
-    except:
-        pass
-    await safe_answer_callback(callback)
-
-@router.message(IDTicketState.waiting_for_player_id)
-async def process_ticket_player_id(message: types.Message, state: FSMContext):
-    player_id = message.text.strip() if message.text else ""
-    if not player_id:
-        await message.answer("❌ يرجى إرسال الـ ID الصحيح فقط:")
-        return
-
-    await state.update_data(ticket_player_id=player_id)
-    await state.set_state(IDTicketState.waiting_for_quantity)
-    
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ إلغاء", callback_data="main_menu"))
-    await message.answer(
-        f"✅ تم تسجيل الـ ID: <code>{player_id}</code>\n\n"
-        "الآن يرجى إرسال **الكمية / الباقة المطلوبة** فقط (مثال: `110 جواهر` أو `325 شدة`):",
-        reply_markup=builder.as_markup()
-    )
-
-@router.message(IDTicketState.waiting_for_quantity)
-async def process_ticket_quantity(message: types.Message, state: FSMContext):
-    quantity = message.text.strip() if message.text else ""
-    if not quantity:
-        await message.answer("❌ يرجى كتابة الكمية المطلوبة فقط:")
-        return
-
-    data = await state.get_data()
-    player_id = data.get("ticket_player_id")
-    user = message.from_user
-    username_str = f"@{user.username}" if user.username else "لا يوجد"
-
-    admin_notice = (
-        f"🎫 <b>تيكيت شحن ID جديد!</b>\n\n"
-        f"👤 <b>العميل:</b> {user.full_name} ({username_str})\n"
-        f"🆔 <b>آي دي العميل:</b> <code>{user.id}</code>\n"
-        f"🎮 <b>Player ID للشحن:</b> <code>{player_id}</code>\n"
-        f"📦 <b>الكمية المطلوبة:</b> <b>{quantity}</b>"
-    )
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="✅ تم الشحن وإغلاق التيكيت", callback_data=f"close_ticket_{user.id}"))
-
-    try:
-        await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
-        await message.answer(
-            "✅ <b>تم فتح التيكيت وإرساله للدعم بنجاح!</b>\n\n"
-            "سيقوم فريق الدعم بمراجعة وتأكيد الشحن على حسابه فوراً."
-        )
-    except Exception as e:
-        await message.answer("❌ حدث خطأ أثناء إرسال التيكيت، حاول مجدداً.")
-
-    await state.clear()
 
 @router.callback_query(F.data.startswith("close_ticket_"))
 async def close_ticket_by_admin(callback: types.CallbackQuery):
@@ -1469,7 +1405,6 @@ async def process_bulk_stock_items(message: types.Message, state: FSMContext):
         if not code:
             continue
 
-        # فحص شرط الـ 16 رقم بالضبط لكروت فري فاير
         if is_freefire and not (code.isdigit() and len(code) == 16):
             invalid_format_count += 1
             continue
