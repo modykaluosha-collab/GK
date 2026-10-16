@@ -29,7 +29,6 @@ SELLER_UPGRADE_COST_EGP = 1250.0
 SELLER_MIN_WITHDRAW = 200.0 
 
 DEFAULT_PLATFORM_FEE = 0.02  
-VIP_PLATFORM_FEE = 0.01      
 
 LOG_CHANNEL_ID = -1004393845755      
 DELIVERY_PROOF_CHANNEL_ID = -1004490105003
@@ -465,9 +464,110 @@ class AdminState(StatesGroup):
 class QuickSearchState(StatesGroup):
     waiting_for_player_id = State()
 
-class IDTicketState(StatesGroup):
-    waiting_for_player_id = State()
-    waiting_for_quantity = State()
+class AdminSetPriceState(StatesGroup):
+    waiting_for_price = State()
+
+@router.callback_query(F.data == "start_id_ticket")
+async def start_id_ticket_process(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(IDTicketState.waiting_for_player_id)
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ إلغاء", callback_data="main_menu"))
+    await callback.message.edit_text(
+        "🎫 <b>فتح تيكيت شحن ID المباشر:</b>\n\nأرسل الـ Player ID (الأيدي) الخاص بك الآن:",
+        reply_markup=builder.as_markup()
+    )
+    await safe_answer_callback(callback)
+
+@router.message(IDTicketState.waiting_for_player_id)
+async def process_ticket_player_id(message: types.Message, state: FSMContext):
+    player_id = message.text.strip()
+    await state.update_data(ticket_player_id=player_id)
+    await state.set_state(IDTicketState.waiting_for_quantity)
+    await message.answer(f"✅ تم تسجيل الـ ID: <code>{player_id}</code>\n\nالآن أرسل الكمية / الباقة المطلوبة:")
+
+@router.message(IDTicketState.waiting_for_quantity)
+async def process_ticket_quantity(message: types.Message, state: FSMContext):
+    quantity = message.text.strip()
+    data = await state.get_data()
+    player_id = data.get("ticket_player_id")
+    user = message.from_user
+    username_str = f"@{user.username}" if user.username else "لا يوجد"
+
+    admin_notice = (
+        f"🎫 <b>تيكيت شحن ID جديد!</b>\n\n"
+        f"👤 <b>العميل:</b> {user.full_name} ({username_str})\n"
+        f"🆔 <b>آي دي العميل:</b> <code>{user.id}</code>\n"
+        f"🎮 <b>Player ID للشحن:</b> <code>{player_id}</code>\n"
+        f"📦 <b>الكمية المطلوبة:</b> <b>{quantity}</b>"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="💰 حدد السعر ووسيلة الدفع للعميل", callback_data=f"set_price_t_{user.id}"))
+    builder.row(types.InlineKeyboardButton(text="✅ تم الشحن وإغلاق التيكيت", callback_data=f"close_ticket_{user.id}"))
+
+    await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
+    await message.answer("✅ <b>تم فتح التيكيت وإرساله للآدمن بنجاح!</b>\nسيصلك إشعار بالسعر وطريقة الدفع فوراً.")
+    await state.clear()
+
+@router.callback_query(F.data.startswith("set_price_t_"))
+async def admin_start_set_ticket_price(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    target_user_id = int(callback.data.split("_")[3])
+    await state.update_data(target_ticket_user=target_user_id)
+    await state.set_state(AdminSetPriceState.waiting_for_price)
+    await callback.message.reply("✍️ **أدخل السعر المطلوب من العميل بالجنيه (EGP):**")
+    await safe_answer_callback(callback)
+
+@router.message(AdminSetPriceState.waiting_for_price)
+async def admin_send_ticket_price_options(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        price = float(message.text.strip())
+        data = await state.get_data()
+        target_user_id = data.get("target_ticket_user")
+        usdt_price = price / USDT_EGP_RATE
+
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            types.InlineKeyboardButton(text="🇪🇬 فودافون كاش", callback_data=f"send_pay_voda_{target_user_id}_{price}"),
+            types.InlineKeyboardButton(text="🌐 عملة USDT (TRC20)", callback_data=f"send_pay_usdt_{target_user_id}_{usdt_price}")
+        )
+
+        await message.answer(
+            f"💰 السعر المكتوب: <b>{price:.2f} EGP</b> (~${usdt_price:.2f} USDT)\nاختر طريقة الدفع التي ستبعتها للعميل:",
+            reply_markup=builder.as_markup()
+        )
+    except ValueError:
+        await message.answer("❌ يرجى كتابة السعر بالأرقام فقط:")
+
+@router.callback_query(F.data.startswith("send_pay_"))
+async def send_payment_details_to_user(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    parts = callback.data.split("_")
+    p_type = parts[2]
+    target_user_id = int(parts[3])
+    amount = float(parts[4])
+
+    if p_type == "voda":
+        pay_msg = (
+            f"💳 <b>تسعيرة طلب الشحن الخاص بك:</b>\n\n"
+            f"💰 المبلغ المطلوب: <b>{amount:.2f} EGP</b>\n"
+            f"📱 رقم فودافون كاش للتحويل: <code>{VODAFONE_NUMBER}</code>\n\n"
+            f"📸 بعد التحويل، قم بإرسال صورة الإيصال هنا لتأكيد الطلب."
+        )
+    else:
+        pay_msg = (
+            f"💳 <b>تسعيرة طلب الشحن الخاص بك:</b>\n\n"
+            f"💰 المبلغ المطلوب: <b>${amount:.2f} USDT</b>\n"
+            f"🌐 عنوان المحفظة TRC20: <code>{USDT_TRC20_ADDRESS}</code>\n\n"
+            f"📸 بعد التحويل، قم بإرسال صورة الإيصال هنا لتأكيد الطلب."
+        )
+
+    try:
+        await bot.send_message(chat_id=target_user_id, text=pay_msg)
+        await callback.message.edit_text(callback.message.text + "\n\n✅ تم إرسال بيانات الدفع والسعر للعميل بنجاح.")
+    except Exception as e:
+        await callback.message.reply(f"❌ تعذر الإرسال للعميل: {e}")
+    await safe_answer_callback(callback)
 
 def get_last_purchased_product(user_id):
     try:
@@ -1339,24 +1439,27 @@ async def adm_save_new_price_usdt(message: types.Message, state: FSMContext):
 
 @router.message(SellerState.waiting_for_seller_stock)
 async def process_bulk_stock_items(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
     data = await state.get_data()
     p_key = data.get("stock_product_key")
     is_admin = data.get("stock_is_admin", 0)
+    user_id = message.from_user.id
 
     if not message.text:
-        await message.answer("❌ Please send valid text containing codes.")
+        await message.answer("❌ يرجى إرسال نص يحتوي على الأكواد.")
         return
 
     if not p_key:
-        await message.answer("❌ Error: Invalid product selection. Please start again.")
+        await message.answer("❌ خطأ: لم يتم التعرف على الباقة. يرجى البدء من جديد.")
         await state.clear()
         return
 
     lines = message.text.strip().split("\n")
     success_count = 0
     duplicate_count = 0
+    invalid_format_count = 0
+
     price_egp, _ = get_product_prices(p_key)
+    is_freefire = p_key.startswith("ff")
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
@@ -1364,6 +1467,11 @@ async def process_bulk_stock_items(message: types.Message, state: FSMContext):
     for line in lines:
         code = line.strip()
         if not code:
+            continue
+
+        # فحص شرط الـ 16 رقم بالضبط لكروت فري فاير
+        if is_freefire and not (code.isdigit() and len(code) == 16):
+            invalid_format_count += 1
             continue
 
         try:
@@ -1384,13 +1492,20 @@ async def process_bulk_stock_items(message: types.Message, state: FSMContext):
     conn.close()
 
     prod_name = PRODUCTS_TITLES.get(p_key, p_key)
-    await message.answer(f"✅ Stock Added Successfully!\nProduct: <b>{prod_name}</b>\nAdded: <b>{success_count}</b>\nIgnored Duplicates: <b>{duplicate_count}</b>")
+    
+    reply_msg = f"✅ <b>نتائج إضافة الستوك ({prod_name}):</b>\n\n"
+    reply_msg += f"• تم الإضافة بنجاح: <b>{success_count}</b>\n"
+    reply_msg += f"• أكواد مكررة تم تجاهلها: <b>{duplicate_count}</b>\n"
+    if invalid_format_count > 0:
+        reply_msg += f"❌ <b>أكواد مرفوضة (ليست 16 رقم): {invalid_format_count}</b>\nسبب الرفض: كود فري فاير يجب أن يتكون من 16 رقمًا بالضبط."
+
+    await message.answer(reply_msg)
     
     if success_count > 0:
         asyncio.create_task(notify_subscribed_users_new_stock(p_key, success_count))
         if is_admin != 1:
             try:
-                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Seller (ID: <code>{user_id}</code>) added <b>{success_count}</b> codes directly to stock for <b>{prod_name}</b>.")
+                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 البائع (ID: <code>{user_id}</code>) أضاف <b>{success_count}</b> كود للباقة <b>{prod_name}</b>.")
             except:
                 pass
                 
