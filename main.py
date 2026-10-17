@@ -21,7 +21,8 @@ TOKEN = "8855603359:AAG5KiEcEZOVbrkCYuPOB9wusoZLL22Mlog"
 ADMIN_ID = 1332736076  
 SUPPORT_USERNAME = "GUODA36"
 
-DEFAULT_VODAFONE_NUMBER = "01008924340"
+# تم تغيير الرقم الافتراضي إلى الرقم الجديد
+DEFAULT_VODAFONE_NUMBER = "01153601637"
 USDT_TRC20_ADDRESS = "TZFH6r1gLj94GWMqAQ71p3uixB7HTd9ZVL"
 
 USDT_EGP_RATE = 50.0  
@@ -192,7 +193,7 @@ def init_db():
         usdt_val = PRODUCTS_PRICES_USDT[p_key]
         cursor.execute("INSERT OR IGNORE INTO product_prices (product_key, price_egp, price_usdt) VALUES (?, ?, ?)", (p_key, egp_val, usdt_val))
 
-    cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('vodafone_number', ?)", (DEFAULT_VODAFONE_NUMBER,))
+    cursor.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('vodafone_number', ?)", (DEFAULT_VODAFONE_NUMBER,))
 
     conn.commit()
     conn.close()
@@ -620,6 +621,23 @@ async def send_payment_details_to_user(callback: types.CallbackQuery, state: FSM
         await callback.message.reply(f"❌ Failed to send to user: {e}")
     await safe_answer_callback(callback)
 
+# ==================== GENERAL RECEIPT HANDLER ====================
+# تم تحديث هذا المورد ليتعامل بشكل أشمل مع أي صورة/ملف ينتمي للطلب أو الإيداع مباشرةً
+@router.message(OrderState.waiting_for_external_receipt, F.photo | F.document)
+async def handle_external_receipt_photo(message: types.Message, state: FSMContext):
+    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
+    if not photo_id: return
+
+    await state.update_data(receipt_photo_id=photo_id)
+    await state.set_state(OrderState.waiting_for_external_details)
+    
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
+    await message.answer(
+        "✍️ Receipt image received!\n\n"
+        "• Send your <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash):",
+        reply_markup=builder.as_markup()
+    )
+
 @router.message(F.photo | F.document)
 async def handle_ticket_receipt_photo(message: types.Message):
     user = message.from_user
@@ -981,7 +999,7 @@ async def process_new_voda_num(message: types.Message, state: FSMContext):
     new_num = message.text.strip()
     
     if not (new_num.isdigit() and new_num.startswith("01") and len(new_num) == 11):
-        await message.reply("❌ **Invalid Vodafone Cash number!**\nNumber must start with `01` and consist of exactly 11 digits (e.g. `01008924340`). Try again:")
+        await message.reply("❌ **Invalid Vodafone Cash number!**\nNumber must start with `01` and consist of exactly 11 digits (e.g. `01153601637`). Try again:")
         return
     
     set_vodafone_number(new_num)
@@ -2659,22 +2677,6 @@ async def process_pay_external_request(callback: types.CallbackQuery, state: FSM
     except:
         pass
     await safe_answer_callback(callback)
-
-# تعديل جوهري هنا: قبول أي صورة أو ملف كإيصال مباشر فوراً
-@router.message(OrderState.waiting_for_external_receipt, F.photo | F.document)
-async def handle_external_receipt_photo(message: types.Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
-    if not photo_id: return
-
-    await state.update_data(receipt_photo_id=photo_id)
-    await state.set_state(OrderState.waiting_for_external_details)
-    
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
-    await message.answer(
-        "✍️ Receipt image received!\n\n"
-        "• Send your <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash):",
-        reply_markup=builder.as_markup()
-    )
 
 @router.message(OrderState.waiting_for_external_receipt)
 async def handle_external_receipt_wrong(message: types.Message, state: FSMContext):
