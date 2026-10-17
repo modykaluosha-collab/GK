@@ -24,7 +24,7 @@ SUPPORT_USERNAME = "GUODA36"
 DEFAULT_VODAFONE_NUMBER = "01008924340"
 USDT_TRC20_ADDRESS = "TZFH6r1gLj94GWMqAQ71p3uixB7HTd9ZVL"
 
-USDT_EGP_RATE = 54.0  # تم التحديث إلى 54
+USDT_EGP_RATE = 54.0  # سعر الصرف المحدث
 MIN_DEPOSIT_AMOUNT = 0.0  
 SELLER_UPGRADE_COST_EGP = 1250.0 
 SELLER_MIN_WITHDRAW = 200.0 
@@ -41,15 +41,24 @@ GUIDE_UPDATES_LINK = "https://t.me/+r3C8qot_U7ExZTU0"
 DELIVERY_PROOF_LINK = "https://t.me/c/4490105003/1"
 STOCK_ALERT_LINK = "https://t.me/c/4486768828/1"
 
-# تم تعديل سعر 110 جوهرة إلى 45 وتعديل باقي الأسعار تناسبيًا
+# أسعار الباقات بالجنيه المصري (الـ 110 جوهرة بـ 45 والباقي متناسق معها ومع سعر الصرف 54)
 PRODUCTS_PRICES_EGP = {
     "ff110": 45.0, "ff231": 90.0, "ff583": 220.0, "ff1188": 440.0, "ff2420": 890.0,
     "pubg60": 45.0, "pubg325": 220.0, "pubg660": 440.0, "pubg1800": 1150.0, "pubg3850": 2300.0, "pubg8100": 4700.0
 }
 
 PRODUCTS_PRICES_USDT = {
-    "ff110": 0.83, "ff231": 1.66, "ff583": 4.07, "ff1188": 8.14, "ff2420": 16.48,
-    "pubg60": 0.83, "pubg325": 4.07, "pubg660": 8.14, "pubg1800": 21.29, "pubg3850": 42.59, "pubg8100": 87.03
+    "ff110": round(45.0 / USDT_EGP_RATE, 2),
+    "ff231": round(90.0 / USDT_EGP_RATE, 2),
+    "ff583": round(220.0 / USDT_EGP_RATE, 2),
+    "ff1188": round(440.0 / USDT_EGP_RATE, 2),
+    "ff2420": round(890.0 / USDT_EGP_RATE, 2),
+    "pubg60": round(45.0 / USDT_EGP_RATE, 2),
+    "pubg325": round(220.0 / USDT_EGP_RATE, 2),
+    "pubg660": round(440.0 / USDT_EGP_RATE, 2),
+    "pubg1800": round(1150.0 / USDT_EGP_RATE, 2),
+    "pubg3850": round(2300.0 / USDT_EGP_RATE, 2),
+    "pubg8100": round(4700.0 / USDT_EGP_RATE, 2)
 }
 
 PRODUCTS_TITLES = {
@@ -415,6 +424,12 @@ def get_multiple_stock_codes(product_key, quantity):
         asyncio.create_task(notify_low_stock(product_key, rem_count))
         
     return rows
+
+def get_stock_code(product_key):
+    items = get_multiple_stock_codes(product_key, 1)
+    if items:
+        return items[0][1], items[0][2], items[0][3]
+    return None, 0, 0.0
 
 async def notify_low_stock(product_key, rem_count):
     p_name = PRODUCTS_TITLES.get(product_key, product_key)
@@ -1219,7 +1234,8 @@ async def run_full_scheduled_price_update(new_prices_map, hours):
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
         for p_key, new_egp in new_prices_map.items():
-            cursor.execute("UPDATE product_prices SET price_egp = ? WHERE product_key = ?", (new_egp, p_key))
+            new_usdt = round(new_egp / USDT_EGP_RATE, 2)
+            cursor.execute("UPDATE product_prices SET price_egp = ?, price_usdt = ? WHERE product_key = ?", (new_egp, new_usdt, p_key))
         conn.commit()
         conn.close()
 
@@ -2404,7 +2420,6 @@ async def process_buy_click(callback: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(product_title=title, product_key=p_key, product_price_egp=egp_price, product_price_usdt=usdt_price, selected_currency=curr)
 
-    # Quantity Selection
     builder = InlineKeyboardBuilder()
     builder.row(
         types.InlineKeyboardButton(text="1", callback_data=f"set_qty_1"),
@@ -2526,7 +2541,6 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
         await safe_answer_callback(callback, "⚠️ Sorry, requested stock is no longer available!", show_alert=True)
         return
 
-    # Deduct Total Price
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (total_price, user.id))
@@ -2538,7 +2552,6 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
     for _, code_val, auto_seller_id, _ in stock_items:
         codes_delivered.append(code_val)
         net_profit = 0.0
-        seller_info_str = "Admin Direct Stock 👑"
 
         if auto_seller_id > 0:
             sales_cnt = get_seller_data(auto_seller_id)[2]
@@ -2546,7 +2559,6 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
             store_commission = unit_price * fee_rate
             net_profit = unit_price - store_commission
             
-            # Direct addition to seller_balance (No Hold)
             conn = sqlite3.connect(DB_NAME, timeout=30.0)
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET seller_balance = seller_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, auto_seller_id))
@@ -2736,10 +2748,8 @@ async def admin_accept_order(callback: types.CallbackQuery, state: FSMContext):
 
     target_user_id, product_title, product_key, _, seller_id, item_price, payment_type, _ = order_data
 
-    # جلب الأكواد تلقائياً من المخزون وتأكيد إرسالها للمستخدم مباشرة عند قبول الإدمن
-    stock_items = get_multiple_stock_codes(product_key, 1) # أو الكمية المطلوبة إذا رغبت
-    if stock_items:
-        _, auto_code, auto_seller_id, auto_price = stock_items[0]
+    auto_code, auto_seller_id, auto_price = get_stock_code(product_key)
+    if auto_code:
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
         cursor.execute("UPDATE active_orders SET seller_id = ?, item_price = ? WHERE order_id = ?", (auto_seller_id, auto_price if auto_price > 0 else item_price, order_id))
