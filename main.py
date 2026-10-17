@@ -520,6 +520,83 @@ class IDTicketState(StatesGroup):
 class BuyQuantityState(StatesGroup):
     waiting_for_custom_quantity = State()
 
+# ==================== UNIVERSAL PHOTO RECEIVER ====================
+
+@router.message(F.photo)
+async def global_deposit_and_order_photo_handler(message: types.Message, state: FSMContext):
+    photo_id = message.photo[-1].file_id
+    user = message.from_user
+    details = message.caption.strip() if message.caption else "No details attached"
+
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # 1. Check for Pending Deposits
+    cursor.execute("SELECT deposit_id, amount FROM active_deposits WHERE user_id = ? AND status = 'pending' ORDER BY deposit_id DESC LIMIT 1", (user.id,))
+    dep_row = cursor.fetchone()
+    
+    if dep_row:
+        deposit_id, dep_amount = dep_row
+        cursor.execute("UPDATE active_deposits SET receipt_file_id = ? WHERE deposit_id = ?", (photo_id, deposit_id))
+        conn.commit()
+        conn.close()
+
+        await message.answer("✅ <b>Deposit receipt received successfully!</b>\nAdmin is reviewing your transaction.")
+
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            types.InlineKeyboardButton(text="✅ Approve Deposit", callback_data=f"accept_dep_{deposit_id}"),
+            types.InlineKeyboardButton(text="❌ Reject Deposit", callback_data=f"reject_dep_{deposit_id}_{user.id}")
+        )
+
+        admin_notice = (
+            f"💳 <b>New Deposit Request (#{deposit_id})</b>\n\n"
+            f"💰 Amount: <b>{dep_amount:.2f} EGP (~${dep_amount/USDT_EGP_RATE:.2f} USDT)</b>\n"
+            f"👤 User: {user.full_name} (@{user.username if user.username else 'NoUsername'} | ID: <code>{user.id}</code>)\n"
+            f"📝 Info: <code>{details}</code>"
+        )
+        try:
+            await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_notice, reply_markup=builder.as_markup())
+        except:
+            await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
+        await state.clear()
+        return
+
+    # 2. Check for Pending Direct Orders
+    cursor.execute("SELECT order_id, item_price, product_title FROM active_orders WHERE user_id = ? AND status IN ('pending', 'pending_receipt') ORDER BY order_id DESC LIMIT 1", (user.id,))
+    ord_row = cursor.fetchone()
+    
+    if ord_row:
+        order_id, price, p_title = ord_row
+        cursor.execute("UPDATE active_orders SET receipt_file_id = ?, status = 'pending' WHERE order_id = ?", (photo_id, order_id))
+        conn.commit()
+        conn.close()
+
+        await message.answer("✅ <b>Payment screenshot received successfully!</b>\nYour order is now being processed.")
+
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            types.InlineKeyboardButton(text="✅ Accept & Deliver", callback_data=f"accept_{order_id}"),
+            types.InlineKeyboardButton(text="❌ Reject Order", callback_data=f"reject_{order_id}")
+        )
+
+        admin_caption = (
+            f"📦 <b>New Order Receipt (#{order_id})</b>\n\n"
+            f"Product: <b>{p_title}</b>\n"
+            f"💰 Price: <b>{price:.2f} EGP</b>\n"
+            f"👤 Customer: <b>{user.full_name}</b> (@{user.username if user.username else 'NoUsername'} | ID: <code>{user.id}</code>)\n"
+            f"📝 Details: <code>{details}</code>"
+        )
+        try:
+            await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_caption, reply_markup=builder.as_markup())
+        except:
+            await bot.send_message(chat_id=ADMIN_ID, text=admin_caption, reply_markup=builder.as_markup())
+        await state.clear()
+        return
+
+    conn.close()
+    await message.answer("⚠️ No active order or deposit pending receipt was found. Please select an option from main menu.")
+
 # ==================== ID TICKET SYSTEM ====================
 
 @router.callback_query(F.data == "start_id_ticket")
@@ -634,43 +711,6 @@ async def send_payment_details_to_user(callback: types.CallbackQuery, state: FSM
     except Exception as e:
         await callback.message.reply(f"❌ Failed to send to user: {e}")
     await safe_answer_callback(callback)
-
-@router.message(F.photo)
-async def handle_ticket_receipt_photo(message: types.Message):
-    user = message.from_user
-    photo_id = message.photo[-1].file_id
-
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute("SELECT order_id, item_price, payment_type FROM active_orders WHERE user_id = ? AND status = 'pending_receipt' ORDER BY order_id DESC LIMIT 1", (user.id,))
-    row = cursor.fetchone()
-    
-    if row:
-        order_id, price, p_type = row
-        cursor.execute("UPDATE active_orders SET receipt_file_id = ?, status = 'pending' WHERE order_id = ?", (photo_id, order_id))
-        conn.commit()
-        conn.close()
-
-        await message.answer("✅ <b>Screenshot received successfully!</b>\nYour order has been sent to admin for verification.")
-
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            types.InlineKeyboardButton(text="✅ Confirm & Deliver", callback_data=f"ticket_accept_{order_id}"),
-            types.InlineKeyboardButton(text="❌ Reject Order", callback_data=f"ticket_reject_{order_id}")
-        )
-        builder.row(types.InlineKeyboardButton(text="🚫 Out of Stock", callback_data=f"ticket_outofstock_{order_id}"))
-
-        admin_notice = (
-            f"📸 <b>New Payment Screenshot Received (Ticket #{order_id})</b>\n\n"
-            f"👤 <b>Customer:</b> {user.full_name} (@{user.username if user.username else 'NoUsername'} | ID: <code>{user.id}</code>)\n"
-            f"💰 <b>Amount:</b> {price:.2f} EGP ({p_type})"
-        )
-        try:
-            await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_notice, reply_markup=builder.as_markup())
-        except:
-            await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
-    else:
-        conn.close()
 
 @router.callback_query(F.data.startswith("ticket_accept_"))
 async def admin_accept_ticket_order(callback: types.CallbackQuery, state: FSMContext):
@@ -2225,6 +2265,14 @@ async def process_preset_deposit_amount(callback: types.CallbackQuery, state: FS
     await state.update_data(deposit_amount=amount)
     await state.set_state(DepositState.waiting_for_deposit_receipt)
     
+    # Save Deposit Request
+    user = callback.from_user
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO active_deposits (user_id, amount, status) VALUES (?, ?, 'pending')", (user.id, amount))
+    conn.commit()
+    conn.close()
+
     msg = (
         f"✅ Selected Deposit Amount: <b>{amount:.0f} EGP (~${usdt_val:.2f} USDT)</b>\n\n"
         f"📲 <b>Payment Methods Available:</b>\n\n"
@@ -2233,8 +2281,7 @@ async def process_preset_deposit_amount(callback: types.CallbackQuery, state: FS
         f"🌐 <b>Binance USDT (TRC20 Network):</b>\n"
         f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (Tap to copy)\n\n"
         "📸 <b>Required Verification Steps:</b>\n"
-        "1. Send transfer receipt screenshot photo.\n"
-        "2. Include <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash)."
+        "Send transfer receipt screenshot photo now."
     )
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
     try:
@@ -2260,6 +2307,13 @@ async def deposit_check_amount(message: types.Message, state: FSMContext):
         await state.update_data(deposit_amount=amount)
         await state.set_state(DepositState.waiting_for_deposit_receipt)
         
+        user = message.from_user
+        conn = sqlite3.connect(DB_NAME, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO active_deposits (user_id, amount, status) VALUES (?, ?, 'pending')", (user.id, amount))
+        conn.commit()
+        conn.close()
+
         msg = (
             f"✅ Selected Deposit Amount: <b>{amount:.0f} EGP (~${usdt_val:.2f} USDT)</b>\n\n"
             f"📲 <b>Payment Methods Available:</b>\n\n"
@@ -2273,47 +2327,6 @@ async def deposit_check_amount(message: types.Message, state: FSMContext):
         await message.answer(msg)
     except ValueError:
         await message.answer("❌ Invalid amount format. Please send digits only.")
-
-@router.message(DepositState.waiting_for_deposit_receipt, F.photo)
-async def deposit_receive_photo(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    dep_amount = data.get("deposit_amount", 0.0)
-    photo_id = message.photo[-1].file_id
-    
-    details = message.caption.strip() if message.caption else "No details attached"
-    user = message.from_user
-
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO active_deposits (user_id, amount, details, receipt_file_id, status) VALUES (?, ?, ?, ?, 'pending')",
-        (user.id, dep_amount, details, photo_id)
-    )
-    deposit_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-
-    await message.answer("✅ <b>Deposit request submitted!</b>\nAdmin is reviewing your transaction and balance will be updated shortly.")
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(text="✅ Approve Deposit", callback_data=f"accept_dep_{deposit_id}"),
-        types.InlineKeyboardButton(text="❌ Reject Deposit", callback_data=f"reject_dep_{deposit_id}_{user.id}")
-    )
-
-    admin_notice = (
-        f"💳 <b>New Deposit Request #{deposit_id}</b>\n\n"
-        f"💰 Amount: <b>{dep_amount:.2f} EGP (~${dep_amount/USDT_EGP_RATE:.2f} USDT)</b>\n"
-        f"👤 User: {user.full_name} (@{user.username if user.username else 'NoUsername'} | ID: <code>{user.id}</code>)\n"
-        f"📝 Sender Info / TXID: <code>{details}</code>"
-    )
-    
-    try:
-        await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_notice, reply_markup=builder.as_markup())
-    except:
-        await bot.send_message(chat_id=ADMIN_ID, text=admin_notice, reply_markup=builder.as_markup())
-        
-    await state.clear()
 
 @router.callback_query(F.data.startswith("accept_dep_"))
 async def admin_accept_deposit(callback: types.CallbackQuery):
@@ -2657,7 +2670,14 @@ async def process_pay_external_request(callback: types.CallbackQuery, state: FSM
     tot_usdt = usdt_price * qty
     voda_num = get_current_vodafone_number()
 
-    await state.update_data(payment_type="external")
+    user = callback.from_user
+    prod_title = data.get("product_title", "Product")
+    prod_key = data.get("product_key", "item")
+    user_username = f"@{user.username}" if user.username else "N/A"
+
+    order_id = save_active_order(user.id, f"{qty}x {prod_title}", prod_key, user_username, 0, tot_egp, payment_type="external")
+
+    await state.update_data(payment_type="external", active_order_id=order_id)
     await state.set_state(OrderState.waiting_for_external_receipt)
     
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
@@ -2681,71 +2701,16 @@ async def process_pay_external_request(callback: types.CallbackQuery, state: FSM
         pass
     await safe_answer_callback(callback)
 
-@router.message(OrderState.waiting_for_external_receipt, F.photo)
-async def handle_external_receipt_photo(message: types.Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id
-    await state.update_data(receipt_photo_id=photo_id)
-    await state.set_state(OrderState.waiting_for_external_details)
-    
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
-    await message.answer(
-        "✍️ Receipt image received!\n\n"
-        "• Send your <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash):",
-        reply_markup=builder.as_markup()
-    )
-
-@router.message(OrderState.waiting_for_external_receipt)
-async def handle_external_receipt_wrong(message: types.Message, state: FSMContext):
-    await message.answer("❌ Please send the receipt screenshot photo first.")
-
-@router.message(OrderState.waiting_for_external_details)
-async def handle_external_details_finish(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    photo_id = data.get("receipt_photo_id")
-    details = message.text.strip() if message.text else "No details"
-    user = message.from_user
-    prod_title = data.get("product_title", "Product")
-    prod_key = data.get("product_key", "item")
-    curr = data.get("selected_currency", "egp")
-    qty = data.get("order_quantity", 1)
-    
-    unit_price = data.get("product_price_egp", 0.0) if curr == "egp" else (data.get("product_price_usdt", 0.0) * USDT_EGP_RATE)
-    tot_price = unit_price * qty
-    user_username = f"@{user.username}" if user.username else "N/A"
-
-    order_id = save_active_order(user.id, f"{qty}x {prod_title}", prod_key, user_username, 0, tot_price, payment_type="external", receipt_file_id=photo_id)
-
-    await message.answer("✅ Direct payment order submitted successfully! Waiting for admin review and approval.")
-
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(text="✅ Accept & Deliver", callback_data=f"accept_{order_id}"),
-        types.InlineKeyboardButton(text="❌ Reject Order", callback_data=f"reject_{order_id}")
-    )
-    builder.row(types.InlineKeyboardButton(text="🚫 Ban User", callback_data=f"ban_user_{user.id}"))
-
-    admin_caption = (
-        f"📦 <b>New Direct Payment Order #{order_id}</b>\n\n"
-        f"Product: <b>{prod_title}</b> (Qty: <b>{qty}</b>)\n"
-        f"Total Price: <b>{tot_price:.2f} EGP</b>\n"
-        f"Sender Phone / TXID: <code>{details}</code>\n"
-        f"User: <b>{user.full_name}</b> ({user_username} | ID: <code>{user.id}</code>)"
-    )
-    if photo_id:
-        try:
-            await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_caption, reply_markup=builder.as_markup())
-        except:
-            await bot.send_message(chat_id=ADMIN_ID, text=admin_caption, reply_markup=builder.as_markup())
-    else:
-        try:
-            await bot.send_message(chat_id=ADMIN_ID, text=admin_caption, reply_markup=builder.as_markup())
-        except:
-            pass
-    await state.clear()
+# ==================== ORDER ACCEPTS & HANDLERS ====================
 
 @router.callback_query(F.data.startswith("accept_"))
 async def admin_accept_order(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
+    
+    # Avoid conflict with accept_dep_ or ticket_accept_
+    if "accept_dep_" in callback.data or "ticket_accept_" in callback.data:
+        return
+
     order_id = int(callback.data.split("_")[1])
     order_data = get_active_order(order_id)
     if not order_data:
@@ -2918,8 +2883,11 @@ async def process_user_rating(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("reject_"))
 async def admin_reject_order(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
-    order_id = int(callback.data.split("_")[1])
     
+    if "reject_dep_" in callback.data:
+        return
+
+    order_id = int(callback.data.split("_")[1])
     await state.update_data(reject_order_id=order_id)
     await state.set_state(AdminState.waiting_for_reject_reason)
     
