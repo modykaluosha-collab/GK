@@ -620,10 +620,11 @@ async def send_payment_details_to_user(callback: types.CallbackQuery, state: FSM
         await callback.message.reply(f"❌ Failed to send to user: {e}")
     await safe_answer_callback(callback)
 
-@router.message(F.photo)
+@router.message(F.photo | F.document)
 async def handle_ticket_receipt_photo(message: types.Message):
     user = message.from_user
-    photo_id = message.photo[-1].file_id
+    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
+    if not photo_id: return
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
@@ -969,7 +970,7 @@ async def start_change_voda_num(callback: types.CallbackQuery, state: FSMContext
     await callback.message.edit_text(
         f"📱 **Change Vodafone Cash Number:**\n\n"
         f"Current number: <code>{current_num}</code>\n\n"
-        f"✍️ Send the new Vodafone Cash number now:",
+        f"✍️ Send the new Vodafone Cash number now (Must start with 01 and contain 11 digits):",
         reply_markup=builder.as_markup()
     )
     await safe_answer_callback(callback)
@@ -978,8 +979,10 @@ async def start_change_voda_num(callback: types.CallbackQuery, state: FSMContext
 async def process_new_voda_num(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
     new_num = message.text.strip()
-    if not new_num.isdigit() or len(new_num) < 10:
-        await message.reply("❌ Please enter a valid phone number (digits only).")
+    
+    # Check if number starts with 01 and is exactly 11 digits
+    if not (new_num.isdigit() and new_num.startswith("01") and len(new_num) == 11):
+        await message.reply("❌ **Invalid Vodafone Cash number!**\nNumber must start with `01` and consist of exactly 11 digits (e.g. `01008924340`). Try again:")
         return
     
     set_vodafone_number(new_num)
@@ -2217,7 +2220,7 @@ async def process_preset_deposit_amount(callback: types.CallbackQuery, state: FS
         f"🌐 <b>Binance USDT (TRC20 Network):</b>\n"
         f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (Tap to copy)\n\n"
         "📸 <b>Required Verification Steps:</b>\n"
-        "1. Send transfer receipt screenshot photo.\n"
+        "1. Send transfer receipt screenshot photo or file.\n"
         "2. Include <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash)."
     )
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
@@ -2252,17 +2255,17 @@ async def deposit_check_amount(message: types.Message, state: FSMContext):
             f"🌐 <b>Binance USDT (TRC20 Network):</b>\n"
             f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (Tap to copy)\n\n"
             "📸 <b>Required Verification Steps:</b>\n"
-            "Send transfer receipt screenshot photo now."
+            "Send transfer receipt screenshot photo or file now."
         )
         await message.answer(msg)
     except ValueError:
         await message.answer("❌ Invalid amount format. Please send digits only.")
 
-@router.message(DepositState.waiting_for_deposit_receipt, F.photo)
+@router.message(DepositState.waiting_for_deposit_receipt, F.photo | F.document)
 async def deposit_receive_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     dep_amount = data.get("deposit_amount", 0.0)
-    photo_id = message.photo[-1].file_id
+    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
     
     details = message.caption.strip() if message.caption else "No details attached"
     user = message.from_user
@@ -2648,23 +2651,26 @@ async def process_pay_external_request(callback: types.CallbackQuery, state: FSM
                 f"📲 <b>Direct Payment Details:</b>\n\n"
                 f"🇪🇬 <b>Vodafone Cash (Egypt):</b>\n"
                 f"• Number: <code>{voda_num}</code> ({tot_egp:.0f} EGP for {qty}x)\n\n"
-                "📸 Please send the <b>transfer screenshot</b> photo now:"
+                "📸 Please send the <b>transfer screenshot photo or file</b> now:"
             )
         else:
             pay_text = (
                 f"📲 <b>Direct Payment Details:</b>\n\n"
                 f"🌐 <b>Binance USDT TRC20 (International):</b>\n"
                 f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (${tot_usdt:.2f} USDT for {qty}x)\n\n"
-                "📸 Please send the <b>transfer screenshot</b> photo now:"
+                "📸 Please send the <b>transfer screenshot photo or file</b> now:"
             )
         await callback.message.edit_text(pay_text, reply_markup=builder.as_markup())
     except:
         pass
     await safe_answer_callback(callback)
 
-@router.message(OrderState.waiting_for_external_receipt, F.photo)
+# Accepting receipts sent either as a Photo or Document/File
+@router.message(OrderState.waiting_for_external_receipt, F.photo | F.document)
 async def handle_external_receipt_photo(message: types.Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id
+    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
+    if not photo_id: return
+
     await state.update_data(receipt_photo_id=photo_id)
     await state.set_state(OrderState.waiting_for_external_details)
     
@@ -2677,7 +2683,7 @@ async def handle_external_receipt_photo(message: types.Message, state: FSMContex
 
 @router.message(OrderState.waiting_for_external_receipt)
 async def handle_external_receipt_wrong(message: types.Message, state: FSMContext):
-    await message.answer("❌ Please send the receipt screenshot photo first.")
+    await message.answer("❌ Please send the receipt screenshot as a photo or image file.")
 
 @router.message(OrderState.waiting_for_external_details)
 async def handle_external_details_finish(message: types.Message, state: FSMContext):
