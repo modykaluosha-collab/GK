@@ -24,7 +24,7 @@ SUPPORT_USERNAME = "GUODA36"
 DEFAULT_VODAFONE_NUMBER = "01008924340"
 USDT_TRC20_ADDRESS = "TZFH6r1gLj94GWMqAQ71p3uixB7HTd9ZVL"
 
-USDT_EGP_RATE = 54.0  # سعر الصرف المحدث
+USDT_EGP_RATE = 54.0  
 MIN_DEPOSIT_AMOUNT = 0.0  
 SELLER_UPGRADE_COST_EGP = 1250.0 
 SELLER_MIN_WITHDRAW = 200.0 
@@ -41,7 +41,6 @@ GUIDE_UPDATES_LINK = "https://t.me/+r3C8qot_U7ExZTU0"
 DELIVERY_PROOF_LINK = "https://t.me/c/4490105003/1"
 STOCK_ALERT_LINK = "https://t.me/c/4486768828/1"
 
-# أسعار الباقات بالجنيه المصري (الـ 110 جوهرة بـ 45 والباقي متناسق معها ومع سعر الصرف 54)
 PRODUCTS_PRICES_EGP = {
     "ff110": 45.0, "ff231": 90.0, "ff583": 220.0, "ff1188": 440.0, "ff2420": 890.0,
     "pubg60": 45.0, "pubg325": 220.0, "pubg660": 440.0, "pubg1800": 1150.0, "pubg3850": 2300.0, "pubg8100": 4700.0
@@ -84,7 +83,7 @@ else:
     DB_NAME = "store_v25_escrow.db"
 
 user_last_action = {}
-SPAM_DELAY = 0.5  
+SPAM_DELAY = 0.3  
 maintenance_mode = False  
 
 def init_db():
@@ -2298,7 +2297,7 @@ async def deposit_receive_photo(message: types.Message, state: FSMContext):
     
     builder = InlineKeyboardBuilder()
     builder.row(
-        types.InlineKeyboardButton(text="✅ Approve Deposit", callback_data=f"accept_dep_{deposit_id}_{user.id}_{int(dep_amount)}"),
+        types.InlineKeyboardButton(text="✅ Approve Deposit", callback_data=f"accept_dep_{deposit_id}"),
         types.InlineKeyboardButton(text="❌ Reject Deposit", callback_data=f"reject_dep_{deposit_id}_{user.id}")
     )
 
@@ -2321,11 +2320,18 @@ async def admin_accept_deposit(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
     parts = callback.data.split("_")
     deposit_id = int(parts[2])
-    target_user_id = int(parts[3])
-    amount = float(parts[4])
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
+    cursor.execute("SELECT user_id, amount FROM active_deposits WHERE deposit_id = ?", (deposit_id,))
+    dep_row = cursor.fetchone()
+    
+    if not dep_row:
+        conn.close()
+        await safe_answer_callback(callback, "⚠️ Deposit request not found.", show_alert=True)
+        return
+
+    target_user_id, amount = dep_row
     cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_user_id))
     cursor.execute("UPDATE active_deposits SET status = 'APPROVED' WHERE deposit_id = ?", (deposit_id,))
     conn.commit()
