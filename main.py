@@ -21,11 +21,10 @@ TOKEN = "8855603359:AAG5KiEcEZOVbrkCYuPOB9wusoZLL22Mlog"
 ADMIN_ID = 1332736076  
 SUPPORT_USERNAME = "GUODA36"
 
-# تم تغيير الرقم الافتراضي إلى الرقم الجديد
-DEFAULT_VODAFONE_NUMBER = "01153601637"
+DEFAULT_VODAFONE_NUMBER = "01008924340"
 USDT_TRC20_ADDRESS = "TZFH6r1gLj94GWMqAQ71p3uixB7HTd9ZVL"
 
-USDT_EGP_RATE = 50.0  
+USDT_EGP_RATE = 54.0  # تم التحديث إلى 54
 MIN_DEPOSIT_AMOUNT = 0.0  
 SELLER_UPGRADE_COST_EGP = 1250.0 
 SELLER_MIN_WITHDRAW = 200.0 
@@ -42,14 +41,15 @@ GUIDE_UPDATES_LINK = "https://t.me/+r3C8qot_U7ExZTU0"
 DELIVERY_PROOF_LINK = "https://t.me/c/4490105003/1"
 STOCK_ALERT_LINK = "https://t.me/c/4486768828/1"
 
+# تم تعديل سعر 110 جوهرة إلى 45 وتعديل باقي الأسعار تناسبيًا
 PRODUCTS_PRICES_EGP = {
-    "ff110": 42.0, "ff231": 84.0, "ff583": 210.0, "ff1188": 420.0, "ff2420": 850.0,
-    "pubg60": 42.0, "pubg325": 210.0, "pubg660": 420.0, "pubg1800": 1100.0, "pubg3850": 2200.0, "pubg8100": 4500.0
+    "ff110": 45.0, "ff231": 90.0, "ff583": 220.0, "ff1188": 440.0, "ff2420": 890.0,
+    "pubg60": 45.0, "pubg325": 220.0, "pubg660": 440.0, "pubg1800": 1150.0, "pubg3850": 2300.0, "pubg8100": 4700.0
 }
 
 PRODUCTS_PRICES_USDT = {
-    "ff110": 0.84, "ff231": 1.68, "ff583": 4.20, "ff1188": 8.40, "ff2420": 17.0,
-    "pubg60": 0.84, "pubg325": 4.20, "pubg660": 8.40, "pubg1800": 22.0, "pubg3850": 44.0, "pubg8100": 90.0
+    "ff110": 0.83, "ff231": 1.66, "ff583": 4.07, "ff1188": 8.14, "ff2420": 16.48,
+    "pubg60": 0.83, "pubg325": 4.07, "pubg660": 8.14, "pubg1800": 21.29, "pubg3850": 42.59, "pubg8100": 87.03
 }
 
 PRODUCTS_TITLES = {
@@ -193,7 +193,7 @@ def init_db():
         usdt_val = PRODUCTS_PRICES_USDT[p_key]
         cursor.execute("INSERT OR IGNORE INTO product_prices (product_key, price_egp, price_usdt) VALUES (?, ?, ?)", (p_key, egp_val, usdt_val))
 
-    cursor.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('vodafone_number', ?)", (DEFAULT_VODAFONE_NUMBER,))
+    cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('vodafone_number', ?)", (DEFAULT_VODAFONE_NUMBER,))
 
     conn.commit()
     conn.close()
@@ -597,14 +597,14 @@ async def send_payment_details_to_user(callback: types.CallbackQuery, state: FSM
             f"💳 <b>Order Pricing & Payment Details:</b>\n\n"
             f"💰 Total Amount: <b>{amount:.2f} EGP</b>\n"
             f"📱 Vodafone Cash Number: <code>{voda_num}</code>\n\n"
-            f"📸 <b>After transferring, please send your transfer screenshot photo or file here to confirm your order.</b>"
+            f"📸 <b>After transferring, please send your transfer screenshot photo here to confirm your order.</b>"
         )
     else:
         pay_msg = (
             f"💳 <b>Order Pricing & Payment Details:</b>\n\n"
             f"💰 Total Amount: <b>${amount:.2f} USDT</b>\n"
             f"🌐 TRC20 Wallet Address: <code>{USDT_TRC20_ADDRESS}</code>\n\n"
-            f"📸 <b>After transferring, please send your transfer screenshot photo or file here to confirm your order.</b>"
+            f"📸 <b>After transferring, please send your transfer screenshot photo here to confirm your order.</b>"
         )
 
     try:
@@ -621,28 +621,10 @@ async def send_payment_details_to_user(callback: types.CallbackQuery, state: FSM
         await callback.message.reply(f"❌ Failed to send to user: {e}")
     await safe_answer_callback(callback)
 
-# ==================== GENERAL RECEIPT HANDLER ====================
-# تم تحديث هذا المورد ليتعامل بشكل أشمل مع أي صورة/ملف ينتمي للطلب أو الإيداع مباشرةً
-@router.message(OrderState.waiting_for_external_receipt, F.photo | F.document)
-async def handle_external_receipt_photo(message: types.Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
-    if not photo_id: return
-
-    await state.update_data(receipt_photo_id=photo_id)
-    await state.set_state(OrderState.waiting_for_external_details)
-    
-    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
-    await message.answer(
-        "✍️ Receipt image received!\n\n"
-        "• Send your <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash):",
-        reply_markup=builder.as_markup()
-    )
-
-@router.message(F.photo | F.document)
+@router.message(F.photo)
 async def handle_ticket_receipt_photo(message: types.Message):
     user = message.from_user
-    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
-    if not photo_id: return
+    photo_id = message.photo[-1].file_id
 
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
@@ -988,7 +970,7 @@ async def start_change_voda_num(callback: types.CallbackQuery, state: FSMContext
     await callback.message.edit_text(
         f"📱 **Change Vodafone Cash Number:**\n\n"
         f"Current number: <code>{current_num}</code>\n\n"
-        f"✍️ Send the new Vodafone Cash number now (Must start with 01 and contain 11 digits):",
+        f"✍️ Send the new Vodafone Cash number now:",
         reply_markup=builder.as_markup()
     )
     await safe_answer_callback(callback)
@@ -997,9 +979,8 @@ async def start_change_voda_num(callback: types.CallbackQuery, state: FSMContext
 async def process_new_voda_num(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
     new_num = message.text.strip()
-    
-    if not (new_num.isdigit() and new_num.startswith("01") and len(new_num) == 11):
-        await message.reply("❌ **Invalid Vodafone Cash number!**\nNumber must start with `01` and consist of exactly 11 digits (e.g. `01153601637`). Try again:")
+    if not new_num.isdigit() or len(new_num) < 10:
+        await message.reply("❌ Please enter a valid phone number (digits only).")
         return
     
     set_vodafone_number(new_num)
@@ -2237,7 +2218,7 @@ async def process_preset_deposit_amount(callback: types.CallbackQuery, state: FS
         f"🌐 <b>Binance USDT (TRC20 Network):</b>\n"
         f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (Tap to copy)\n\n"
         "📸 <b>Required Verification Steps:</b>\n"
-        "1. Send transfer receipt screenshot photo or file.\n"
+        "1. Send transfer receipt screenshot photo.\n"
         "2. Include <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash)."
     )
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
@@ -2272,17 +2253,17 @@ async def deposit_check_amount(message: types.Message, state: FSMContext):
             f"🌐 <b>Binance USDT (TRC20 Network):</b>\n"
             f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (Tap to copy)\n\n"
             "📸 <b>Required Verification Steps:</b>\n"
-            "Send transfer receipt screenshot photo or file now."
+            "Send transfer receipt screenshot photo now."
         )
         await message.answer(msg)
     except ValueError:
         await message.answer("❌ Invalid amount format. Please send digits only.")
 
-@router.message(DepositState.waiting_for_deposit_receipt, F.photo | F.document)
+@router.message(DepositState.waiting_for_deposit_receipt, F.photo)
 async def deposit_receive_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     dep_amount = data.get("deposit_amount", 0.0)
-    photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
+    photo_id = message.photo[-1].file_id
     
     details = message.caption.strip() if message.caption else "No details attached"
     user = message.from_user
@@ -2423,6 +2404,7 @@ async def process_buy_click(callback: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(product_title=title, product_key=p_key, product_price_egp=egp_price, product_price_usdt=usdt_price, selected_currency=curr)
 
+    # Quantity Selection
     builder = InlineKeyboardBuilder()
     builder.row(
         types.InlineKeyboardButton(text="1", callback_data=f"set_qty_1"),
@@ -2544,6 +2526,7 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
         await safe_answer_callback(callback, "⚠️ Sorry, requested stock is no longer available!", show_alert=True)
         return
 
+    # Deduct Total Price
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (total_price, user.id))
@@ -2555,6 +2538,7 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
     for _, code_val, auto_seller_id, _ in stock_items:
         codes_delivered.append(code_val)
         net_profit = 0.0
+        seller_info_str = "Admin Direct Stock 👑"
 
         if auto_seller_id > 0:
             sales_cnt = get_seller_data(auto_seller_id)[2]
@@ -2562,6 +2546,7 @@ async def process_pay_wallet_request(callback: types.CallbackQuery, state: FSMCo
             store_commission = unit_price * fee_rate
             net_profit = unit_price - store_commission
             
+            # Direct addition to seller_balance (No Hold)
             conn = sqlite3.connect(DB_NAME, timeout=30.0)
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET seller_balance = seller_balance + ?, seller_sales_count = seller_sales_count + 1 WHERE user_id = ?", (net_profit, auto_seller_id))
@@ -2664,23 +2649,36 @@ async def process_pay_external_request(callback: types.CallbackQuery, state: FSM
                 f"📲 <b>Direct Payment Details:</b>\n\n"
                 f"🇪🇬 <b>Vodafone Cash (Egypt):</b>\n"
                 f"• Number: <code>{voda_num}</code> ({tot_egp:.0f} EGP for {qty}x)\n\n"
-                "📸 Please send the <b>transfer screenshot photo or file</b> now:"
+                "📸 Please send the <b>transfer screenshot</b> photo now:"
             )
         else:
             pay_text = (
                 f"📲 <b>Direct Payment Details:</b>\n\n"
                 f"🌐 <b>Binance USDT TRC20 (International):</b>\n"
                 f"• Address: <code>{USDT_TRC20_ADDRESS}</code> (${tot_usdt:.2f} USDT for {qty}x)\n\n"
-                "📸 Please send the <b>transfer screenshot photo or file</b> now:"
+                "📸 Please send the <b>transfer screenshot</b> photo now:"
             )
         await callback.message.edit_text(pay_text, reply_markup=builder.as_markup())
     except:
         pass
     await safe_answer_callback(callback)
 
+@router.message(OrderState.waiting_for_external_receipt, F.photo)
+async def handle_external_receipt_photo(message: types.Message, state: FSMContext):
+    photo_id = message.photo[-1].file_id
+    await state.update_data(receipt_photo_id=photo_id)
+    await state.set_state(OrderState.waiting_for_external_details)
+    
+    builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu"))
+    await message.answer(
+        "✍️ Receipt image received!\n\n"
+        "• Send your <b>TXID / Order ID</b> (for Crypto) OR <b>Phone Number</b> (for Vodafone Cash):",
+        reply_markup=builder.as_markup()
+    )
+
 @router.message(OrderState.waiting_for_external_receipt)
 async def handle_external_receipt_wrong(message: types.Message, state: FSMContext):
-    await message.answer("❌ Please send the receipt screenshot as a photo or file.")
+    await message.answer("❌ Please send the receipt screenshot photo first.")
 
 @router.message(OrderState.waiting_for_external_details)
 async def handle_external_details_finish(message: types.Message, state: FSMContext):
@@ -2738,8 +2736,10 @@ async def admin_accept_order(callback: types.CallbackQuery, state: FSMContext):
 
     target_user_id, product_title, product_key, _, seller_id, item_price, payment_type, _ = order_data
 
-    auto_code, auto_seller_id, auto_price = get_stock_code(product_key)
-    if auto_code:
+    # جلب الأكواد تلقائياً من المخزون وتأكيد إرسالها للمستخدم مباشرة عند قبول الإدمن
+    stock_items = get_multiple_stock_codes(product_key, 1) # أو الكمية المطلوبة إذا رغبت
+    if stock_items:
+        _, auto_code, auto_seller_id, auto_price = stock_items[0]
         conn = sqlite3.connect(DB_NAME, timeout=30.0)
         cursor = conn.cursor()
         cursor.execute("UPDATE active_orders SET seller_id = ?, item_price = ? WHERE order_id = ?", (auto_seller_id, auto_price if auto_price > 0 else item_price, order_id))
